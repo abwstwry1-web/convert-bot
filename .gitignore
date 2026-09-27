@@ -2,3 +2,14 @@ node_modules/
 .env
 data/
 *.log
+check-deploy.js
+check.js
+diag-report.txt
+diag.js
+diag2.js
+diag3.js
+doctor.js
+logger.js
+fix.js
+test*.js
+reset.js
