@@ -1,0 +1,5041 @@
+require("dotenv").config();
+const logger = require("./logger");
+const fs = require("fs");
+const path = require("path");
+const {
+  Client, GatewayIntentBits, Partials, EmbedBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle,
+  StringSelectMenuBuilder, StringSelectMenuOptionBuilder,
+  ModalBuilder, TextInputBuilder, TextInputStyle, AttachmentBuilder,
+} = require("discord.js");
+const { createCanvas, loadImage, GlobalFonts } = require("@napi-rs/canvas");
+
+const OWNER_ID = process.env.OWNER_ID;
+const ALLOWED = [OWNER_ID, "1273804388930031690"];
+const members = new Map();
+const GUILD_ID = "1515298513498542191";
+
+const sessions = new Map();
+const lists = new Map();
+const ONB_FILE = path.join(__dirname, "data", "onboarding.json");
+function loadOnboarding() {
+  try {
+    if (fs.existsSync(ONB_FILE)) return JSON.parse(fs.readFileSync(ONB_FILE, "utf8"));
+  } catch (e) { console.log("load onboarding err:", e.message); }
+  return { enabled: false, questions: [] };
+}
+function saveOnboarding() {
+  try {
+    if (!fs.existsSync(path.dirname(ONB_FILE))) fs.mkdirSync(path.dirname(ONB_FILE), { recursive: true });
+    fs.writeFileSync(ONB_FILE, JSON.stringify(onboarding, null, 2));
+  } catch (e) { console.log("save err:", e.message); }
+}
+let onboarding = loadOnboarding();
+const onboardingSessions = new Map();
+
+// Iconify = خدمة مضمونة 100% (Simple Icons)
+// الشركة المالكة للألعاب (لأن الشعارات تكون للشركة مو اللعبة)
+const CATEGORY_HINTS = {
+  games: { title: "🎮 ألعاب", ex: "minecraft, gta\nأو بالعربي: ببجي, ماين كرافت, فري فاير" },
+  funny: { title: "😂 مضحك", ex: "funny cat, dog, meme\nأو بالعربي: قطط, كلب, ضحك" },
+  flags: { title: "🏳️ أعلام", ex: "iraq flag, usa flag\nأو بالعربي: علم العراق, علم مصر" },
+  movies: { title: "🎬 أفلام", ex: "marvel, batman, avatar\nأو بالعربي: سبايدر مان, باتمان" },
+  series: { title: "📺 مسلسلات", ex: "breaking bad, netflix\nأو بالعربي: أنمي, كرتون" },
+  anime: { title: "🇯🇵 أنمي", ex: "naruto, one piece, dragon ball\nأو بالعربي: ناروتو, ون بيس, ديث نوت" },
+};
+let paused = false;
+
+const AUTO_MATCHES_FILE = path.join(__dirname, "data", "auto-matches.json");
+const TRACKED_LEAGUES = [
+  { id: 2, name: "دوري أبطال أوروبا" },
+  { id: 3, name: "الدوري الأوروبي" },
+  { id: 848, name: "دوري المؤتمر" },
+  { id: 39, name: "الدوري الإنجليزي" },
+  { id: 140, name: "الدوري الإسباني" },
+  { id: 135, name: "الدوري الإيطالي" },
+  { id: 78, name: "الدوري الألماني" },
+  { id: 61, name: "الدوري الفرنسي" },
+  { id: 307, name: "الدوري السعودي" },
+  { id: 17, name: "دوري أبطال آسيا" },
+  { id: 305, name: "الدوري القطري" },
+  { id: 301, name: "دوري الإمارات" },
+  { id: 332, name: "الدوري العراقي" },
+  { id: 1, name: "كأس العالم" },
+  { id: 4, name: "كأس أوروبا" },
+  { id: 9, name: "كوبا أمريكا" },
+  { id: 6, name: "كأس أفريقيا" },
+  { id: 7, name: "كأس آسيا" },
+];
+function loadAutoData() {
+  try {
+    if (fs.existsSync(AUTO_MATCHES_FILE)) return JSON.parse(fs.readFileSync(AUTO_MATCHES_FILE, "utf8"));
+  } catch (e) { console.log("load auto err:", e.message); }
+  return { channelId: null, matches: [], lastFetch: 0 };
+}
+function saveAutoData() {
+  try {
+    const dir = path.dirname(AUTO_MATCHES_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(AUTO_MATCHES_FILE, JSON.stringify(autoData, null, 2));
+  } catch (e) { console.log("save auto err:", e.message); }
+}
+let autoData = loadAutoData();
+
+// بطولات المنتخبات الوطنية فقط
+const NATIONAL_LEAGUES = new Set([
+  34,   // كأس الخليج (Gulf Cup)
+  293,  // كأس الخليج (احتياطي)
+  1,    // كأس العالم
+  4,    // كأس أوروبا
+  5,    // دوري الأمم الأوروبية
+  6,    // كأس الأمم الأفريقية
+  7,    // كأس آسيا
+  9,    // كوبا أمريكا
+  10,   // مباريات دولية ودية
+  22,   // كأس الكونكاكاف الذهبي
+  29,   // تصفيات كأس العالم - آسيا
+  30,   // تصفيات كأس العالم - أوقيانوسيا
+  31,   // تصفيات كأس العالم - أمريكا الجنوبية
+  32,   // تصفيات كأس العالم - الكونكاكاف
+  34,   // تصفيات كأس العالم - أفريقيا
+  35,   // تصفيات كأس العالم - أوروبا
+  37,   // بطولة غرب آسيا
+  38,   // كأس العرب
+  960,  // تصفيات كأس أوروبا
+  961,  // تصفيات كأس آسيا
+  962,  // تصفيات كأس أفريقيا
+  963,  // تصفيات كوبا أمريكا
+  964,  // دوري أمم الكونكاكاف
+  1066, // كأس آسيا تحت 23
+  1080, // مباريات ودية نسائية
+]);
+
+async function fetchFixturesFromApi() {
+  const key = process.env.FOOTBALL_API_KEY;
+  if (!key) { console.log("❌ ماكو FOOTBALL_API_KEY"); return []; }
+  const all = [];
+  const seenIds = new Set();
+
+  // نجيب اليوم + باجر بس (حدود الخطة المجانية)
+  const today = new Date();
+  for (let i = 0; i < 2; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() + i);
+    const dateStr = d.toISOString().slice(0, 10);
+    try {
+      const r = await fetch("https://v3.football.api-sports.io/fixtures?date=" + dateStr, {
+        headers: { "x-apisports-key": key },
+      });
+      const txt = await r.text();
+      let j;
+      try { j = JSON.parse(txt); } catch (e) {
+        console.log("❌ رد غير JSON [" + dateStr + "]: " + txt.slice(0, 120));
+        continue;
+      }
+      if (j.errors && Object.keys(j.errors).length) {
+        console.log("❌ API error [" + dateStr + "]: " + JSON.stringify(j.errors).slice(0, 200));
+        continue;
+      }
+      if (j.results) console.log("📅 " + dateStr + ": " + j.results + " مباريات");
+      if (j.response && Array.isArray(j.response)) {
+        for (const f of j.response) {
+          if (!f || !f.fixture || !f.fixture.id) continue;
+          if (seenIds.has(f.fixture.id)) continue;
+          seenIds.add(f.fixture.id);
+          all.push(f);
+        }
+      }
+    } catch (e) { console.log("fetch " + dateStr + " err: " + e.message); }
+    await new Promise((r) => setTimeout(r, 600));
+  }
+
+  const now = Date.now();
+  const twoHours = 2 * 3600 * 1000;
+  const inWindow = (f) => {
+    const t = new Date(f.fixture.date).getTime();
+    return t > now + twoHours && t < now + 48 * 3600 * 1000;
+  };
+
+  // ═══ الفلتر: منتخبات وطنية فقط ═══
+  // 1) نتأكد إن الاتحاد الدولي (league.id في القائمة)
+  // 2) نتأكد إن الفريقين عندهم علم دولة
+  const filtered = all.filter((f) => {
+    if (!f.league || !f.teams || !f.teams.home || !f.teams.away) return false;
+    if (!NATIONAL_LEAGUES.has(f.league.id)) return false;
+    if (!inWindow(f)) return false;
+    return true;
+  });
+
+  console.log("🌍 مباريات منتخبات وطنية: " + filtered.length + " من " + all.length);
+
+  // نسجل البطولات
+  const leagues = {};
+  for (const f of filtered) {
+    const k = f.league.name + " (" + (f.league.country || "World") + ")";
+    leagues[k] = (leagues[k] || 0) + 1;
+  }
+  const top = Object.entries(leagues).sort((a, b) => b[1] - a[1]);
+  if (top.length) {
+    console.log("📊 البطولات:");
+    for (const [n, c] of top.slice(0, 10)) console.log("   • " + n + " → " + c);
+  } else {
+    console.log("ℹ️ ماكو مباريات منتخبات حالياً باليوم/باجر");
+  }
+
+  return filtered;
+}
+
+function parseApiFixtures(fixtures) {
+  const out = [];
+  for (const f of fixtures) {
+    try {
+      const startTime = new Date(f.fixture.date).getTime();
+      if (startTime < Date.now() - 3600000) continue; // نتجاهل اللي بدأت
+      out.push({
+        id: "auto_" + f.fixture.id,
+        fixtureId: f.fixture.id,
+        team1: f.teams.home.name,
+        team2: f.teams.away.name,
+        logo1: f.teams.home.logo,
+        logo2: f.teams.away.logo,
+        league: f.league.name,
+        leagueLogo: f.league.logo,
+        startTime,
+        channelId: autoData.channelId,
+        sentAt: null,
+        messageId: null,
+        closed: false,
+        predictions: {},
+        source: "auto",
+      });
+    } catch (e) {}
+  }
+  return out;
+}
+
+async function refreshAutoMatches(force) {
+  const now = Date.now();
+  // نحدث كل 6 ساعات
+  if (!force && autoData.lastFetch && now - autoData.lastFetch < 6 * 3600 * 1000) {
+    console.log("⏭️ آخر تحديث قبل " + Math.round((now - autoData.lastFetch) / 60000) + " دقيقة");
+    return 0;
+  }
+  console.log("🔄 جاري تحديث المباريات من API...");
+  const fixtures = await fetchFixturesFromApi();
+  const parsed = parseApiFixtures(fixtures);
+
+  // نمسح القديمة (اللي انتهت) + نضيف الجديدة
+  const oldIds = new Set(autoData.matches.map((m) => m.id));
+  const newMatches = autoData.matches.filter((m) => m.startTime > now);
+  let added = 0;
+  for (const nm of parsed) {
+    if (!oldIds.has(nm.id)) { newMatches.push(nm); added++; }
+  }
+  autoData.matches = newMatches;
+  autoData.lastFetch = now;
+  saveAutoData();
+  console.log("✅ تم تحديث " + added + " مباراة جديدة. المجموع: " + autoData.matches.length);
+  return added;
+}
+
+const MATCHES_FILE = path.join(__dirname, "data", "matches.json");
+function loadMatchesData() {
+  try {
+    if (fs.existsSync(MATCHES_FILE)) return JSON.parse(fs.readFileSync(MATCHES_FILE, "utf8"));
+  } catch (e) { console.log("load matches err:", e.message); }
+  return { matches: [], defaultChannelId: null };
+}
+function saveMatchesData() {
+  try {
+    const dir = path.dirname(MATCHES_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(MATCHES_FILE, JSON.stringify(matchesData, null, 2));
+  } catch (e) { console.log("save matches err:", e.message); }
+}
+let matchesData = loadMatchesData();
+
+function flagEmoji(code) {
+  if (!code || code.length !== 2) return "🏳️";
+  return code.toUpperCase().replace(/./g, function(c) {
+    return String.fromCodePoint(c.charCodeAt(0) + 127397);
+  });
+}
+
+function formatIraqTime(ms) {
+  try {
+    const d = new Date(ms + 3 * 3600 * 1000);
+    const y = d.getUTCFullYear();
+    const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const da = String(d.getUTCDate()).padStart(2, "0");
+    const h = String(d.getUTCHours()).padStart(2, "0");
+    const mi = String(d.getUTCMinutes()).padStart(2, "0");
+    return y + "-" + mo + "-" + da + " " + h + ":" + mi;
+  } catch { return "?"; }
+}
+
+function parseIraqTime(str) {
+  let m = str.match(/(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})/);
+  let y, mo, d, h, mi;
+  if (m) { y = m[1]; mo = m[2]; d = m[3]; h = m[4]; mi = m[5]; }
+  else {
+    m = str.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
+    if (!m) return null;
+    d = m[1]; mo = m[2]; y = m[3]; h = m[4]; mi = m[5];
+  }
+  return Date.UTC(parseInt(y), parseInt(mo) - 1, parseInt(d), parseInt(h) - 3, parseInt(mi));
+}
+
+function buildMatchEmbed(m) {
+  const now = Date.now();
+  const remain = m.startTime - now;
+
+  // ═══ الحالة ═══
+  const live = m.liveData || null;
+  let statusLine = "";
+
+  if (m.closed && live) {
+    // المباراة شغالة أو منتهية
+    const s = live.status;
+    const min = live.elapsed || 0;
+    const ex = live.extra || 0;
+
+    if (s === "NS") {
+      statusLine = "🕐 **تبدأ قريباً**";
+    } else if (s === "1H" || s === "2H") {
+      statusLine = "🔴 **" + min + "'**";
+      if (ex > 0) statusLine += " **+" + ex + "**";
+    } else if (s === "HT") {
+      statusLine = "⏸️ **استراحة**";
+    } else if (s === "ET") {
+      statusLine = "🔴 **الوقت الإضافي " + min + "'**";
+      if (ex > 0) statusLine += " **+" + ex + "**";
+    } else if (s === "BT") {
+      statusLine = "⏸️ **استراحة الوقت الإضافي**";
+    } else if (s === "P" || s === "PEN") {
+      statusLine = "🥅 **ركلات الترجيح**";
+    } else if (s === "FT" || s === "AET") {
+      statusLine = "🏁 **انتهت المباراة**";
+    } else if (s === "SUSP" || s === "INT") {
+      statusLine = "⏸️ **موقوفة مؤقتاً**";
+    } else if (s === "PST") {
+      statusLine = "📅 **مؤجلة**";
+    } else if (s === "CANC") {
+      statusLine = "❌ **ملغاة**";
+    } else {
+      statusLine = s;
+    }
+  } else if (m.closed || remain <= 0) {
+    statusLine = "🔴 **التوقع مقفل**";
+  } else if (remain > 0) {
+    const h = Math.floor(remain / 3600000);
+    const mn = Math.floor((remain % 3600000) / 60000);
+    statusLine = "⏳ متبقي: " + (h > 0 ? h + " ساعة " : "") + mn + " دقيقة";
+  }
+
+  // ═══ النتيجة ═══
+  const hs = live ? live.homeScore : 0;
+  const as_ = live ? live.awayScore : 0;
+  let scoreLine = "";
+  if (m.closed && live && live.status !== "NS") {
+    scoreLine = "\n\n**" + hs + " - " + as_ + "**\n";
+  }
+
+  const preds = Object.keys(m.predictions || {}).length;
+
+  const embed = new EmbedBuilder()
+    .setColor(m.closed ? 0xe74c3c : 0x9b59b6)
+    .setTitle(flagEmoji(m.flag1) + "  " + m.team1 + "  VS  " + m.team2 + "  " + flagEmoji(m.flag2))
+    .setDescription(
+      scoreLine +
+      "📅 **الموعد:** " + formatIraqTime(m.startTime) + " (بغداد)\n" +
+      statusLine + "\n\n" +
+      "🎯 **المتوقعين:** " + preds
+    )
+    .setFooter({ text: "MRBOT Matches" });
+  if (m.logo1) embed.setThumbnail(m.logo1);
+  return embed;
+}
+
+async function loadImageFromUrl(url) {
+  try {
+    if (!url) return null;
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const buf = Buffer.from(await r.arrayBuffer());
+    return await loadImage(buf);
+  } catch (e) { return null; }
+}
+
+async function sendMatchCard(channel, m, withButton) {
+  const buf = await generateMatchCard(m);
+  const fileName = "match_" + m.id + ".png";
+  const file = new AttachmentBuilder(buf, { name: fileName });
+  const preds = Object.keys(m.predictions || {}).length;
+  const closed = m.closed || Date.now() >= m.startTime;
+  const embed = new EmbedBuilder()
+    .setColor(closed ? 0x95a5a6 : 0x5865f2)
+    .setImage("attachment://" + fileName)
+    .setFooter({ text: (closed ? "🔴 التوقع مقفل" : "🎯 المتوقعين: " + preds) + " • MRBOT" });
+  const options = { embeds: [embed], files: [file] };
+  const btns = [];
+  if (withButton && !closed) btns.push(new ButtonBuilder().setCustomId("predict_btn_" + m.id).setLabel("خمن النتيجة").setEmoji("🎯").setStyle(ButtonStyle.Primary));
+  btns.push(new ButtonBuilder().setCustomId("lineup_" + (m.fixtureId || m.id)).setLabel("التشكيلة").setEmoji("👥").setStyle(ButtonStyle.Secondary));
+  if (btns.length) options.components = [new ActionRowBuilder().addComponents(btns)];
+  return channel.send(options);
+}
+
+async function editMatchCard(channel, messageId, m, withButton) {
+  try {
+    const buf = await generateMatchCard(m);
+    const fileName = "match_" + m.id + ".png";
+    const file = new AttachmentBuilder(buf, { name: fileName });
+    const preds = Object.keys(m.predictions || {}).length;
+    const closed = m.closed || Date.now() >= m.startTime;
+    const embed = new EmbedBuilder()
+      .setColor(closed ? 0x95a5a6 : 0x5865f2)
+      .setImage("attachment://" + fileName)
+      .setFooter({ text: (closed ? "🔴 التوقع مقفل" : "🎯 المتوقعين: " + preds) + " • MRBOT" });
+    const msg = await channel.messages.fetch(messageId).catch(() => null);
+    if (!msg) return null;
+    const options = { embeds: [embed], files: [file] };
+    if (withButton && !closed) {
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("predict_btn_" + m.id).setLabel("خمن النتيجة").setEmoji("🎯").setStyle(ButtonStyle.Primary)
+      );
+      options.components = [row];
+    } else {
+      options.components = [];
+    }
+    return msg.edit(options);
+  } catch (e) { console.log("edit card err:", e.message); return null; }
+}
+
+// ═══════════ تسجيل الخطوط ═══════════
+let AR = "bold 30px sans-serif"; // الخط العربي
+try {
+  const path = require("path");
+  const fontsDir = path.join(__dirname, "fonts");
+  let loaded = false;
+  if (fs.existsSync(fontsDir)) {
+    const files = fs.readdirSync(fontsDir).filter((f) => f.endsWith(".ttf") || f.endsWith(".otf") || f.endsWith(".woff"));
+    for (const f of files) {
+      const p = path.join(fontsDir, f);
+      const sz = fs.statSync(p).size;
+      if (sz < 5000) { console.log("⚠️ " + f + " صغير (" + sz + "b) — نتخطى"); continue; }
+      try {
+        GlobalFonts.registerFromPath(p, "ArabicFont");
+        console.log("✅ سُجل: " + f + " (" + Math.round(sz / 1024) + " KB)");
+        loaded = true;
+        break;
+      } catch (e) { console.log("❌ " + f + ": " + e.message); }
+    }
+  }
+  // خط لاتيني
+  const latinPath = path.join(fontsDir, "NotoSans-Bold.ttf");
+  let latinLoaded = false;
+  if (fs.existsSync(latinPath) && fs.statSync(latinPath).size > 5000) {
+    try {
+      GlobalFonts.registerFromPath(latinPath, "LatinFont");
+      console.log("✅ سُجل: NotoSans-Bold.ttf (لاتيني)");
+      latinLoaded = true;
+    } catch (e) { console.log("❌ latin:", e.message); }
+  }
+
+  if (loaded && latinLoaded) {
+    AR = "bold 30px LatinFont, ArabicFont";
+    console.log("✅ الخطوط جاهزة (لاتيني + عربي)");
+  } else if (loaded) {
+    AR = "bold 30px LatinFont, ArabicFont";
+    console.log("✅ عربي بس");
+  } else if (latinLoaded) {
+    AR = "bold 30px LatinFont";
+    console.log("⚠️ لاتيني بس");
+  } else {
+    console.log("⚠️ ماكو خط عربي — راح تستخدم الافتراضي (الأحرف العربية ما تظهر)");
+  }
+} catch (e) { console.log("font err:", e.message); }
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function fitFont(ctx, text, maxW, baseSize) {
+  let size = baseSize;
+  ctx.font = "bold " + size + "px LatinFont, ArabicFont, sans-serif";
+  while (ctx.measureText(text).width > maxW && size > 16) {
+    size -= 2;
+    ctx.font = "bold " + size + "px LatinFont, ArabicFont, sans-serif";
+  }
+  return size;
+}
+
+// ═══════════ صور اللاعبين ═══════════
+let PLAYERS_MAP = {};
+try {
+  const p = require("path").join(__dirname, "data", "players", "players.json");
+  if (fs.existsSync(p)) {
+    PLAYERS_MAP = JSON.parse(fs.readFileSync(p, "utf8"));
+    console.log("✅ تم تحميل " + Object.keys(PLAYERS_MAP).length + " لاعب");
+  }
+} catch (e) { console.log("players load err:", e.message); }
+
+function getFamousPlayer(teamName) {
+  if (!teamName) return null;
+  if (PLAYERS_MAP[teamName]) return PLAYERS_MAP[teamName];
+  // نجرب بشوية تعديلات
+  const clean = teamName.replace(/^(منتخب|Team)\s+/i, "").trim();
+  if (PLAYERS_MAP[clean]) return PLAYERS_MAP[clean];
+  for (const k of Object.keys(PLAYERS_MAP)) {
+    if (k.toLowerCase() === clean.toLowerCase()) return PLAYERS_MAP[k];
+  }
+  return null;
+}
+
+const PLAYER_CACHE_DIR = require("path").join(__dirname, "data", "players", "cache");
+if (!fs.existsSync(PLAYER_CACHE_DIR)) fs.mkdirSync(PLAYER_CACHE_DIR, { recursive: true });
+
+// ═══════════════════════════════════════════
+// 🧠 نظام المطابقة الذكية
+// ═══════════════════════════════════════════
+
+function levenshtein(a, b) {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const matrix = [];
+  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        );
+      }
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
+function similarity(a, b) {
+  const A = normName(a), B = normName(b);
+  if (!A || !B) return 0;
+  if (A === B) return 1;
+  const maxLen = Math.max(A.length, B.length);
+  return 1 - levenshtein(A, B) / maxLen;
+}
+
+// ترانسليتريشن عربي تقريبي
+function transliterateArabic(str) {
+  const map = {
+    'ا': 'a', 'أ': 'a', 'إ': 'i', 'آ': 'aa', 'ب': 'b', 'ت': 't', 'ث': 'th',
+    'ج': 'j', 'ح': 'h', 'خ': 'kh', 'د': 'd', 'ذ': 'dh', 'ر': 'r', 'ز': 'z',
+    'س': 's', 'ش': 'sh', 'ص': 's', 'ض': 'd', 'ط': 't', 'ظ': 'dh', 'ع': 'a',
+    'غ': 'gh', 'ف': 'f', 'ق': 'q', 'ك': 'k', 'ل': 'l', 'م': 'm', 'ن': 'n',
+    'ه': 'h', 'و': 'w', 'ي': 'y', 'ى': 'a', 'ة': 'a', 'ء': 'a', 'ئ': 'y',
+    'ؤ': 'w', 'ﻻ': 'la', 'لا': 'la',
+  };
+  return str.split('').map((c) => map[c] || c).join('').replace(/\s+/g, ' ').trim();
+}
+
+// كلمات مشتركة نتجاهلها
+const STOPWORDS = new Set(["de", "da", "do", "van", "der", "den", "la", "le", "el", "al", "bin", "ibn", "ben", "the", "jr", "sr", "ii", "iii"]);
+
+function normName(str) {
+  if (!str) return "";
+  let out = str.toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  // لو فيه عربي، نحوله
+  if (/[\u0600-\u06FF]/.test(out)) {
+    out = transliterateArabic(out);
+  }
+  out = out.replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ").trim();
+  // نشيل كلمات مشتركة
+  const words = out.split(" ").filter((w) => !STOPWORDS.has(w));
+  return words.join(" ");
+}
+
+function nameMatch(a, b) {
+  const A = normName(a), B = normName(b);
+  if (!A || !B) return false;
+  if (A === B) return true;
+  const sim = similarity(A, B);
+  if (sim >= 0.75) return true;
+  // كل كلمات a موجودة في b
+  const aW = A.split(" ").filter((w) => w.length > 2);
+  const bW = B.split(" ").filter((w) => w.length > 2);
+  if (aW.length === 0 || bW.length === 0) return false;
+  return aW.every((w) => B.includes(w)) || bW.every((w) => A.includes(w));
+}
+
+// ═══════════════════════════════════════════
+// 🔍 نظام البحث عن اللاعبين (متعدد المصادر)
+// ═══════════════════════════════════════════
+
+function normName(str) {
+  if (!str) return "";
+  return str.toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ").trim();
+}
+
+function nameMatch(a, b) {
+  const A = normName(a), B = normName(b);
+  if (!A || !B) return false;
+  if (A === B) return true;
+  // نتحقق من كلمات الاسم
+  const aW = A.split(" ").filter((w) => w.length > 2);
+  const bW = B.split(" ").filter((w) => w.length > 2);
+  if (aW.length === 0 || bW.length === 0) return false;
+  // كل كلمات a موجودة في b أو العكس
+  const allA = aW.every((w) => B.includes(w));
+  const allB = bW.every((w) => A.includes(w));
+  return allA || allB;
+}
+
+// ═══ المصدر 1: API-Football ═══
+async function searchAPIFootballPlayer(playerName) {
+  try {
+    const key = process.env.FOOTBALL_API_KEY;
+    if (!key) return null;
+    const url = "https://v3.football.api-sports.io/players?search=" + encodeURIComponent(playerName);
+    const r = await fetch(url, { headers: { "x-apisports-key": key } });
+    const j = await r.json();
+    if (!j.response || !j.response.length) return null;
+
+    // نختار اللاعب الأقرب للاسم
+    let best = null;
+    let bestScore = 0;
+    for (const item of j.response) {
+      if (!item.player || !item.player.name) continue;
+      const n = item.player.name;
+      if (!nameMatch(n, playerName)) continue;
+      // نفضل من عنده photo
+      let score = 0;
+      if (item.player.photo) score += 10;
+      if (item.player.nationality) score += 3;
+      if (item.player.age) score += 1;
+      // نفضل نفس الاسم بالضبط
+      if (normName(n) === normName(playerName)) score += 50;
+      if (score > bestScore) { bestScore = score; best = item.player; }
+    }
+    if (!best || !best.photo) return null;
+    return { url: best.photo, source: "apifootball", matchedName: best.name };
+  } catch (e) {
+    console.log("❌ APIFootball [" + playerName + "]: " + e.message);
+    return null;
+  }
+}
+
+// ═══ المصدر 2: TheSportsDB ═══
+async function searchSportsDBPlayer(playerName) {
+  try {
+    const url = "https://www.thesportsdb.com/api/v1/json/3/searchplayers.php?p=" + encodeURIComponent(playerName);
+    const r = await fetch(url);
+    const j = await r.json();
+    if (!j.player || !j.player.length) return null;
+
+    let best = null;
+    let bestScore = 0;
+    for (const p of j.player) {
+      if (!p.strPlayer) continue;
+      if (!nameMatch(p.strPlayer, playerName)) continue;
+      if (p.strSport && p.strSport.toLowerCase() !== "soccer") continue;
+      // نفضل cutout
+      let score = 0;
+      if (p.strCutout) score += 30;
+      else if (p.strRender) score += 15;
+      else if (p.strThumb) score += 5;
+      else continue;
+      // مطابقة بالضبط
+      if (normName(p.strPlayer) === normName(playerName)) score += 50;
+      // نفس الجنسية (منتخب)
+      if (score > bestScore) { bestScore = score; best = p; }
+    }
+    if (!best) return null;
+    const imgUrl = best.strCutout || best.strRender || best.strThumb;
+    if (!imgUrl) return null;
+    return { url: imgUrl, source: "thesportsdb", matchedName: best.strPlayer, hasCutout: !!best.strCutout };
+  } catch (e) {
+    console.log("❌ SportsDB [" + playerName + "]: " + e.message);
+    return null;
+  }
+}
+
+// ═══ المصدر 3: Wikipedia ═══
+async function searchWikipediaPlayer(playerName) {
+  try {
+    const query = encodeURIComponent(playerName + " footballer");
+    const url = "https://en.wikipedia.org/w/api.php?action=query&format=json&prop=pageimages&pithumbsize=500&generator=search&gsrsearch=" + query + "&gsrlimit=5&redirects=1";
+    const r = await fetch(url, { headers: { "User-Agent": "MRBOT/1.0" } });
+    const j = await r.json();
+    if (!j.query || !j.query.pages) return null;
+
+    const pages = Object.values(j.query.pages);
+    let best = null;
+    for (const pg of pages) {
+      if (!pg.title) continue;
+      if (!pg.thumbnail || !pg.thumbnail.source) continue;
+      // نتحقق من الاسم
+      const titleClean = pg.title.replace(/\(.*?\)/g, "").trim();
+      if (!nameMatch(titleClean, playerName)) continue;
+      if (!best) best = pg;
+      // نفضل الاسم الأقرب
+      if (normName(titleClean) === normName(playerName)) { best = pg; break; }
+    }
+    if (!best) return null;
+    return { url: best.thumbnail.source, source: "wikipedia", matchedName: best.title };
+  } catch (e) {
+    console.log("❌ Wikipedia [" + playerName + "]: " + e.message);
+    return null;
+  }
+}
+
+// ═══ المصدر 4: FotMob ═══
+async function searchFotMobPlayer(playerName) {
+  try {
+    // FotMob search
+    const url = "https://www.fotmob.com/api/searchapi/suggest?term=" + encodeURIComponent(playerName) + "&lang=en";
+    const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!j || !j.suggestions) return null;
+    for (const sug of j.suggestions) {
+      if (sug.type !== "player") continue;
+      const n = sug.name || "";
+      if (!nameMatch(n, playerName)) continue;
+      const id = sug.id;
+      if (!id) continue;
+      // نجيب معلومات اللاعب (فيها الصورة)
+      const r2 = await fetch("https://www.fotmob.com/api/playerData?id=" + id, { headers: { "User-Agent": "Mozilla/5.0" } });
+      if (!r2.ok) continue;
+      const j2 = await r2.json();
+      const img = j2?.player?.img || j2?.player?.imageUrl;
+      if (img && img.startsWith("http")) {
+        return { url: img, source: "fotmob", matchedName: n, hasCutout: false };
+      }
+    }
+    return null;
+  } catch (e) { console.log("❌ FotMob [" + playerName + "]: " + e.message); return null; }
+}
+
+// ═══ المصدر 5: Wikidata ═══
+async function searchWikidataPlayer(playerName) {
+  try {
+    // نبحث بالاسم
+    const searchUrl = "https://www.wikidata.org/w/api.php?action=wbsearchentities&format=json&language=en&limit=5&search=" + encodeURIComponent(playerName + " footballer");
+    const r = await fetch(searchUrl, { headers: { "User-Agent": "MRBOT/1.0" } });
+    const j = await r.json();
+    if (!j.search || !j.search.length) return null;
+    for (const item of j.search) {
+      if (!item.label) continue;
+      if (!nameMatch(item.label, playerName)) continue;
+      const id = item.id;
+      // نجيب claims + image
+      const detailUrl = "https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&props=claims&ids=" + id;
+      const r2 = await fetch(detailUrl, { headers: { "User-Agent": "MRBOT/1.0" } });
+      const j2 = await r2.json();
+      const ent = j2.entities && j2.entities[id];
+      if (!ent || !ent.claims || !ent.claims.P18) continue;
+      const file = ent.claims.P18[0]?.mainsnak?.datavalue?.value;
+      if (!file) continue;
+      const clean = file.replace(/ /g, "_");
+      const imgUrl = "https://commons.wikimedia.org/wiki/Special:FilePath/" + encodeURIComponent(clean) + "?width=500";
+      return { url: imgUrl, source: "wikidata", matchedName: item.label, hasCutout: false };
+    }
+    return null;
+  } catch (e) { console.log("❌ Wikidata [" + playerName + "]: " + e.message); return null; }
+}
+
+// ═══ المصدر 6: DuckDuckGo Images ═══
+async function searchDuckDuckGoPlayer(playerName, teamHint) {
+  try {
+    const query = playerName + (teamHint ? " " + teamHint : "") + " footballer portrait";
+    // نجيب vqd من DuckDuckGo
+    const vqdUrl = "https://duckduckgo.com/?q=" + encodeURIComponent(query) + "&iax=images&ia=images";
+    const r0 = await fetch(vqdUrl, { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" } });
+    const html0 = await r0.text();
+    const vqdMatch = html0.match(/vqd=["']?([\d-]+)["']?/);
+    if (!vqdMatch) return null;
+    const vqd = vqdMatch[1];
+
+    const apiUrl = "https://duckduckgo.com/i.js?l=us-en&o=json&q=" + encodeURIComponent(query) + "&vqd=" + vqd + "&f=,,,,,&p=1";
+    const r = await fetch(apiUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Referer": "https://duckduckgo.com/",
+      },
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!j.results || !j.results.length) return null;
+    // ناخذ أول نتيجة موقوقة
+    for (const res of j.results.slice(0, 5)) {
+      if (res.image && res.image.startsWith("http") && res.width >= 300) {
+        return { url: res.image, source: "ddg", matchedName: playerName, hasCutout: false };
+      }
+    }
+    return null;
+  } catch (e) { console.log("❌ DDG [" + playerName + "]: " + e.message); return null; }
+}
+
+// ═══ المصدر 7: SofaScore ═══
+async function searchSofaScorePlayer(playerName) {
+  try {
+    const url = "https://api.sofascore.com/api/v1/search/all?q=" + encodeURIComponent(playerName);
+    const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!j.results || !j.results.length) return null;
+    for (const item of j.results) {
+      if (item.type !== "player") continue;
+      const entity = item.entity || {};
+      if (!entity.name || !entity.id) continue;
+      if (!nameMatch(entity.name, playerName)) continue;
+      // جيب الصورة
+      const imgUrl = "https://api.sofascore.app/api/v1/player/" + entity.id + "/image";
+      return { url: imgUrl, source: "sofascore", matchedName: entity.name, hasCutout: false };
+    }
+    return null;
+  } catch (e) { console.log("❌ SofaScore [" + playerName + "]: " + e.message); return null; }
+}
+
+// ═══ معالجة الصور: شيل الخلفية البيضاء/الرمادية ═══
+async function removeWhiteBg(imgBuffer) {
+  try {
+    const { createCanvas, loadImage } = require("@napi-rs/canvas");
+    const img = await loadImage(imgBuffer);
+    const canvas = createCanvas(img.width, img.height);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    const imgData = ctx.getImageData(0, 0, img.width, img.height);
+    const d = imgData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i], g = d[i + 1], b = d[i + 2];
+      // لو اللون قريب من الأبيض/الرمادي الفاتح → شفاف
+      if (r > 235 && g > 235 && b > 235) {
+        d[i + 3] = 0;
+      }
+      // قريب من الرمادي الفاتح
+      const diff = Math.max(r, g, b) - Math.min(r, g, b);
+      if (diff < 15 && r > 200) {
+        d[i + 3] = Math.min(d[i + 3], 80);
+      }
+    }
+    ctx.putImageData(imgData, 0, 0);
+    return canvas.toBuffer("image/png");
+  } catch (e) { return imgBuffer; }
+}
+
+// ═══════════════════════════════════════════════
+// ⚽ جلب التشكيلات والأحداث الحية
+// ═══════════════════════════════════════════════
+
+async function apiFetch(path) {
+  const key = process.env.FOOTBALL_API_KEY;
+  if (!key) return null;
+  try {
+    const r = await fetch("https://v3.football.api-sports.io" + path, {
+      headers: { "x-apisports-key": key },
+    });
+    const j = await r.json();
+    if (j.errors && Object.keys(j.errors).length) {
+      const errStr = JSON.stringify(j.errors).slice(0, 120);
+      if (!errStr.includes("free") && !errStr.includes("subscription")) console.log("⚠️ API " + path + ": " + errStr);
+      return null;
+    }
+    return j;
+  } catch (e) {
+    console.log("api err " + path + ": " + e.message);
+    return null;
+  }
+}
+
+async function fetchLineup(fixtureId) {
+  const j = await apiFetch("/fixtures/lineups?fixture=" + fixtureId);
+  return j ? j.response : null;
+}
+
+async function fetchLiveEvents(fixtureId) {
+  const j = await apiFetch("/fixtures/events?fixture=" + fixtureId);
+  return j && j.response ? j.response : [];
+}
+
+async function fetchLiveFixture(fixtureId) {
+  const j = await apiFetch("/fixtures?id=" + fixtureId);
+  if (!j || !j.response || !j.response[0]) return null;
+  const f = j.response[0];
+  return {
+    status: f.fixture.status.short,        // NS, 1H, HT, 2H, ET, FT, etc.
+    elapsed: f.fixture.status.elapsed,     // الدقيقة الحالية
+    extra: f.fixture.status.extra,         // الوقت البدل ضايع
+    homeScore: f.goals.home ?? 0,
+    awayScore: f.goals.away ?? 0,
+    startTime: new Date(f.fixture.date).getTime(),
+  };
+}
+
+async function fetchFixtureInfo(fixtureId) {
+  const j = await apiFetch("/fixtures?id=" + fixtureId);
+  return j && j.response && j.response[0] ? j.response[0] : null;
+}
+
+// تنسيقات مساعدة
+function pitchPos(grid, teamSide) {
+  // grid like "1:1" = row:col
+  if (!grid) return null;
+  const parts = grid.split(":").map((x) => parseInt(x));
+  if (parts.length < 2) return null;
+  const row = parts[0], col = parts[1];
+  return { row, col };
+}
+
+function jerseyColor(teamName) {
+  const t = (teamName || "").toLowerCase();
+  if (t.includes("china")) return { bg: "#c8102e", text: "#ffffff" };
+  if (t.includes("iraq")) return { bg: "#ce1126", text: "#ffffff" };
+  if (t.includes("saudi")) return { bg: "#006c35", text: "#ffffff" };
+  if (t.includes("new zealand")) return { bg: "#000000", text: "#ffffff" };
+  if (t.includes("argentina")) return { bg: "#75aadb", text: "#000000" };
+  if (t.includes("brazil")) return { bg: "#fedf00", text: "#009c3b" };
+  if (t.includes("france")) return { bg: "#0055a4", text: "#ffffff" };
+  if (t.includes("germany")) return { bg: "#000000", text: "#ffffff" };
+  if (t.includes("spain")) return { bg: "#c60b1e", text: "#ffc400" };
+  if (t.includes("italy")) return { bg: "#0066cc", text: "#ffffff" };
+  if (t.includes("england")) return { bg: "#ffffff", text: "#cf142b" };
+  if (t.includes("portugal")) return { bg: "#006600", text: "#ff0000" };
+  if (t.includes("netherlands")) return { bg: "#f36c21", text: "#000000" };
+  if (t.includes("mexico")) return { bg: "#006341", text: "#ffffff" };
+  if (t.includes("usa") || t.includes("united states")) return { bg: "#002868", text: "#ffffff" };
+  if (t.includes("japan")) return { bg: "#0b0f6a", text: "#ffffff" };
+  if (t.includes("south korea")) return { bg: "#cd2e3a", text: "#ffffff" };
+  return { bg: "#5865f2", text: "#ffffff" };
+}
+
+// ═══ الدالة الرئيسية: 8 مصادر ═══
+// ═══════════════════════════════════════════════
+// 🌍 نظام جلب التشكيلات الكاملة
+// ═══════════════════════════════════════════════
+
+const SQUAD_CACHE_DIR = require("path").join(__dirname, "data", "players", "squads");
+if (!fs.existsSync(SQUAD_CACHE_DIR)) fs.mkdirSync(SQUAD_CACHE_DIR, { recursive: true });
+
+async function getTeamIdFromSportsDB(teamName) {
+  const safeName = teamName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+  const cacheFile = require("path").join(SQUAD_CACHE_DIR, "team_" + safeName + ".json");
+  if (fs.existsSync(cacheFile)) {
+    try {
+      const d = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+      if (d.id && Date.now() - d.t < 30 * 24 * 3600 * 1000) return d;
+    } catch {}
+  }
+  try {
+    const url = "https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=" + encodeURIComponent(teamName);
+    const r = await fetch(url);
+    const j = await r.json();
+    if (!j.teams || !j.teams.length) return null;
+    let best = null;
+    for (const t of j.teams) {
+      if (!t.strTeam) continue;
+      if (!nameMatch(t.strTeam, teamName)) continue;
+      const isNat = t.strSport === "Soccer" && (t.strTeam.includes("National") || (t.strDescriptionEN && t.strDescriptionEN.toLowerCase().includes("national team")));
+      let score = similarity(t.strTeam, teamName) * 100;
+      if (isNat) score += 50;
+      if (!best || score > best._score) { best = { ...t, _score: score }; }
+    }
+    if (!best) return null;
+    const out = { id: best.idTeam, name: best.strTeam, badge: best.strBadge, t: Date.now() };
+    fs.writeFileSync(cacheFile, JSON.stringify(out));
+    console.log("🌍 فريق: " + teamName + " → " + best.strTeam);
+    return out;
+  } catch (e) { console.log("team err " + teamName + ": " + e.message); return null; }
+}
+
+async function getTeamSquadFromSportsDB(teamId) {
+  const cacheFile = require("path").join(SQUAD_CACHE_DIR, "squad_" + teamId + ".json");
+  if (fs.existsSync(cacheFile)) {
+    try {
+      const d = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+      if (d.players && Date.now() - d.t < 7 * 24 * 3600 * 1000) return d.players;
+    } catch {}
+  }
+  try {
+    const url = "https://www.thesportsdb.com/api/v1/json/3/lookup_all_players.php?id=" + teamId;
+    const r = await fetch(url);
+    const j = await r.json();
+    if (!j.player || !j.player.length) return [];
+    const players = j.player.map((p) => ({
+      name: p.strPlayer, cutout: p.strCutout, thumb: p.strThumb, render: p.strRender,
+      position: p.strPosition, nationality: p.strNationality,
+      number: p.strNumber, height: p.strHeight, weight: p.strWeight,
+      description: p.strDescriptionEN,
+    })).filter((p) => p.name);
+    fs.writeFileSync(cacheFile, JSON.stringify({ players, t: Date.now() }));
+    console.log("👥 تشكيلة " + teamId + ": " + players.length + " لاعب");
+    return players;
+  } catch (e) { console.log("squad err: " + e.message); return []; }
+}
+
+function fameScore(p) {
+  let score = 0;
+  if (p.cutout) score += 200;
+  else if (p.render) score += 100;
+  else if (p.thumb) score += 40;
+  const pos = (p.position || "").toLowerCase();
+  if (pos.includes("forward") || pos.includes("striker") || pos.includes("winger")) score += 80;
+  else if (pos.includes("attacking midfield")) score += 70;
+  else if (pos.includes("midfielder")) score += 50;
+  else if (pos.includes("defender")) score += 30;
+  else if (pos.includes("goalkeeper") || pos.includes("keeper")) score += 25;
+  if (p.description) {
+    if (p.description.length > 2000) score += 60;
+    else if (p.description.length > 1000) score += 40;
+    else if (p.description.length > 500) score += 20;
+  }
+  if (p.number) {
+    const n = parseInt(p.number);
+    if (n === 7 || n === 10 || n === 9 || n === 11) score += 30;
+    else if (n === 1) score += 20;
+  }
+  if (p.height) {
+    const h = parseInt(p.height);
+    if (h >= 165 && h <= 200) score += 15;
+  }
+  return score;
+}
+
+function pickMostFamousPlayer(players) {
+  if (!players || !players.length) return null;
+  const scored = players.map((p) => ({ ...p, _score: fameScore(p) })).sort((a, b) => b._score - a._score);
+  return scored[0];
+}
+
+async function findPlayerFromSquad(teamName) {
+  if (!teamName) return null;
+  const teamInfo = await getTeamIdFromSportsDB(teamName);
+  if (!teamInfo || !teamInfo.id) return null;
+  const squad = await getTeamSquadFromSportsDB(teamInfo.id);
+  if (!squad.length) return null;
+  const best = pickMostFamousPlayer(squad);
+  if (!best) return null;
+  const img = best.cutout || best.render || best.thumb;
+  if (!img) return null;
+  return { name: best.name, imgUrl: img, hasCutout: !!best.cutout,
+    position: best.position, number: best.number, team: teamInfo.name, source: "squad_auto" };
+}
+
+async function findPlayerImage(playerName, teamHint) {
+  if (!playerName && !teamHint) return null;
+
+  // ═══ المصدر الجديد الأول: التشكيلة الكاملة ═══
+  if (teamHint) {
+    try {
+      const squadResult = await findPlayerFromSquad(teamHint);
+      if (squadResult) {
+        console.log("🏆 تشكيلة: " + teamHint + " → " + squadResult.name);
+        return { url: squadResult.imgUrl, source: "squad_auto", matchedName: squadResult.name, hasCutout: squadResult.hasCutout };
+      }
+    } catch (e) { console.log("squad lookup err:", e.message); }
+  }
+
+  if (!playerName) return null;
+
+  // APIFootball
+  const r1 = await searchAPIFootballPlayer(playerName);
+  if (r1) return r1;
+
+  // 5 مصادر متوازية
+  const results = await Promise.all([
+    searchSportsDBPlayer(playerName).catch(() => null),
+    searchWikipediaPlayer(playerName).catch(() => null),
+    searchFotMobPlayer(playerName).catch(() => null),
+    searchWikidataPlayer(playerName).catch(() => null),
+    searchSofaScorePlayer(playerName).catch(() => null),
+  ]);
+
+  const valid = results.filter((r) => r && r.url);
+  const scored = valid.map((r) => {
+    let score = 0;
+    if (r.hasCutout) score += 100;
+    if (r.source === "thesportsdb") score += 50;
+    if (r.source === "apifootball") score += 60;
+    if (r.source === "fotmob") score += 40;
+    if (r.source === "sofascore") score += 35;
+    if (r.source === "wikidata") score += 25;
+    if (r.source === "wikipedia") score += 20;
+    score += similarity(r.matchedName, playerName) * 30;
+    return { ...r, score };
+  }).sort((a, b) => b.score - a.score);
+
+  if (scored.length) return scored[0];
+
+  // DDG احتياط
+  const ddg = await searchDuckDuckGoPlayer(playerName, teamHint);
+  if (ddg) return ddg;
+
+  return null;
+}
+
+async function fetchPlayerImage(playerName, teamHint) {
+  const keyForCache = playerName || teamHint;
+  if (!keyForCache) return null;
+  const safeName = keyForCache.replace(/[^a-zA-Z0-9]/g, "_");
+  const cacheImg = require("path").join(PLAYER_CACHE_DIR, safeName + ".png");
+  const cacheMeta = require("path").join(PLAYER_CACHE_DIR, safeName + ".json");
+
+  if (fs.existsSync(cacheImg) && fs.statSync(cacheImg).size > 1000) {
+    try { return await loadImage(fs.readFileSync(cacheImg)); } catch {}
+  }
+
+  // ═══ محاولات متعددة ═══
+  const attempts = [];
+  if (playerName) attempts.push({ type: "name", val: playerName });
+  if (teamHint) attempts.push({ type: "team", val: teamHint });
+
+  let finalResult = null;
+
+  for (const att of attempts) {
+    if (att.type === "name") {
+      const r = await findPlayerImage(att.val, teamHint);
+      if (r && r.url) { finalResult = r; break; }
+    } else {
+      // لو ماكو اسم → نستخدم التشكيلة
+      const squad = await findPlayerFromSquad(att.val);
+      if (squad && squad.imgUrl) {
+        finalResult = { url: squad.imgUrl, source: "squad", matchedName: squad.name, hasCutout: squad.hasCutout };
+        break;
+      }
+    }
+  }
+
+  if (!finalResult) {
+    console.log("❌ ما لكيت صورة: " + keyForCache);
+    return null;
+  }
+
+  try {
+    let buf = Buffer.from(await (await fetch(finalResult.url, { headers: { "User-Agent": "MRBOT/1.0" } })).arrayBuffer());
+    if (buf.length < 2000) return null;
+    fs.writeFileSync(cacheImg, buf);
+    fs.writeFileSync(cacheMeta, JSON.stringify({
+      source: finalResult.source,
+      matchedName: finalResult.matchedName,
+      originalName: keyForCache,
+      hasCutout: finalResult.hasCutout || false,
+      size: buf.length,
+      date: Date.now(),
+    }));
+    console.log("✅ " + keyForCache + " ← " + finalResult.matchedName + " (" + finalResult.source + ")");
+    return await loadImage(buf);
+  } catch (e) {
+    console.log("❌ " + keyForCache + ": " + e.message);
+    return null;
+  }
+}
+
+// ═══ الدالة الرئيسية: 8 مصادر ═══
+async function findPlayerImage(playerName, teamHint) {
+  if (!playerName && !teamHint) return null;
+
+  // ═══ المصدر الجديد الأول: التشكيلة الكاملة ═══
+  if (teamHint) {
+    try {
+      const squadResult = await findPlayerFromSquad(teamHint);
+      if (squadResult) {
+        console.log("🏆 تشكيلة: " + teamHint + " → " + squadResult.name);
+        return { url: squadResult.imgUrl, source: "squad_auto", matchedName: squadResult.name, hasCutout: squadResult.hasCutout };
+      }
+    } catch (e) { console.log("squad lookup err:", e.message); }
+  }
+
+  if (!playerName) return null;
+
+  // APIFootball
+  const r1 = await searchAPIFootballPlayer(playerName);
+  if (r1) return r1;
+
+  // 5 مصادر متوازية
+  const results = await Promise.all([
+    searchSportsDBPlayer(playerName).catch(() => null),
+    searchWikipediaPlayer(playerName).catch(() => null),
+    searchFotMobPlayer(playerName).catch(() => null),
+    searchWikidataPlayer(playerName).catch(() => null),
+    searchSofaScorePlayer(playerName).catch(() => null),
+  ]);
+
+  const valid = results.filter((r) => r && r.url);
+  const scored = valid.map((r) => {
+    let score = 0;
+    if (r.hasCutout) score += 100;
+    if (r.source === "thesportsdb") score += 50;
+    if (r.source === "apifootball") score += 60;
+    if (r.source === "fotmob") score += 40;
+    if (r.source === "sofascore") score += 35;
+    if (r.source === "wikidata") score += 25;
+    if (r.source === "wikipedia") score += 20;
+    score += similarity(r.matchedName, playerName) * 30;
+    return { ...r, score };
+  }).sort((a, b) => b.score - a.score);
+
+  if (scored.length) return scored[0];
+
+  // DDG احتياط
+  const ddg = await searchDuckDuckGoPlayer(playerName, teamHint);
+  if (ddg) return ddg;
+
+  return null;
+}
+
+async function fetchPlayerImage(playerName, teamHint) {
+  const keyForCache = playerName || teamHint;
+  if (!keyForCache) return null;
+  const safeName = keyForCache.replace(/[^a-zA-Z0-9]/g, "_");
+  const cacheImg = require("path").join(PLAYER_CACHE_DIR, safeName + ".png");
+  const cacheMeta = require("path").join(PLAYER_CACHE_DIR, safeName + ".json");
+
+  // كاش
+  if (fs.existsSync(cacheImg) && fs.statSync(cacheImg).size > 1000) {
+    try {
+      const meta = fs.existsSync(cacheMeta) ? JSON.parse(fs.readFileSync(cacheMeta, "utf8")) : {};
+      console.log("📦 كاش: " + playerName + " (" + (meta.source || "?") + ")");
+      return await loadImage(fs.readFileSync(cacheImg));
+    } catch {}
+  }
+
+  // نبحث بالمصادر المتعددة
+  const result = await findPlayerImage(playerName, teamHint);
+  if (!result || !result.url) {
+    console.log("❌ ما لكيت صورة: " + playerName);
+    return null;
+  }
+
+  try {
+    const r = await fetch(result.url, { headers: { "User-Agent": "MRBOT/1.0" } });
+    if (!r.ok) { console.log("❌ فشل تحميل: " + playerName); return null; }
+    let buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length < 2000) { console.log("⚠️ صورة صغيرة: " + playerName); return null; }
+    // إذا مو cutout، نحاول نشيل الخلفية
+    if (!result.hasCutout) {
+      try {
+        const processed = await removeWhiteBg(buf);
+        if (processed && processed.length > 1000) buf = processed;
+      } catch {}
+    }
+    fs.writeFileSync(cacheImg, buf);
+    fs.writeFileSync(cacheMeta, JSON.stringify({
+      source: result.source,
+      matchedName: result.matchedName,
+      originalName: playerName || teamHint,
+      hasCutout: result.hasCutout || false,
+      size: buf.length,
+      date: Date.now(),
+    }));
+    // نحفظ meta للفريق أيضاً
+    if (teamHint) {
+      const teamKey = teamHint.replace(/[^a-zA-Z0-9]/g, "_");
+      const teamMetaPath = require("path").join(SQUAD_CACHE_DIR, "squad_meta_" + teamKey + ".json");
+      fs.writeFileSync(teamMetaPath, JSON.stringify({ name: result.matchedName, source: result.source, date: Date.now() }));
+    }
+    console.log("✅ " + playerName + " → " + result.matchedName + " (" + result.source + ")");
+    return await loadImage(buf);
+  } catch (e) {
+    console.log("❌ تحميل " + playerName + ": " + e.message);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════
+// 🎨 رسم التشكيلة (ملعب + لاعبين + أحداث)
+// ═══════════════════════════════════════════════
+
+async function generateLineupCard(m, fixtureId) {
+  const W = 1600, H = 1200;
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext("2d");
+
+  // ═══ الخلفية ═══
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, "#0a0e27");
+  bg.addColorStop(1, "#050816");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // ═══ الملعب ═══
+  const pitchX = 80, pitchY = 180, pitchW = W - 160, pitchH = H - 300;
+  const pg = ctx.createLinearGradient(0, pitchY, 0, pitchY + pitchH);
+  pg.addColorStop(0, "#0d5c2e");
+  pg.addColorStop(0.5, "#0e6b35");
+  pg.addColorStop(1, "#0d5c2e");
+  ctx.fillStyle = pg;
+  roundRect(ctx, pitchX, pitchY, pitchW, pitchH, 25);
+  ctx.fill();
+
+  // خطوط الملعب
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(pitchX, pitchY, pitchW, pitchH);
+
+  // خط المنتصف
+  ctx.beginPath();
+  ctx.moveTo(pitchX + pitchW / 2, pitchY);
+  ctx.lineTo(pitchX + pitchW / 2, pitchY + pitchH);
+  ctx.stroke();
+
+  // دائرة المنتصف
+  ctx.beginPath();
+  ctx.arc(pitchX + pitchW / 2, pitchY + pitchH / 2, 90, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // منطقة الجزاء العلوية
+  ctx.strokeRect(pitchX + pitchW / 2 - 250, pitchY, 500, 130);
+  ctx.strokeRect(pitchX + pitchW / 2 - 130, pitchY, 260, 55);
+  // منطقة الجزاء السفلية
+  ctx.strokeRect(pitchX + pitchW / 2 - 250, pitchY + pitchH - 130, 500, 130);
+  ctx.strokeRect(pitchX + pitchW / 2 - 130, pitchY + pitchH - 55, 260, 55);
+
+  // ═══ جلب البيانات ═══
+  const [lineup, events, info] = await Promise.all([
+    fetchLineup(fixtureId),
+    fetchLiveEvents(fixtureId),
+    fetchFixtureInfo(fixtureId),
+  ]);
+
+  const homeScore = info?.goals?.home ?? 0;
+  const awayScore = info?.goals?.away ?? 0;
+  const minute = info?.fixture?.status?.elapsed ?? 0;
+  const status = info?.fixture?.status?.short ?? "NS";
+
+  // ═══ الهيدر (نتيجة حية) ═══
+  ctx.fillStyle = "rgba(20, 25, 50, 0.9)";
+  roundRect(ctx, W / 2 - 350, 30, 700, 130, 25);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(120, 160, 255, 0.6)";
+  ctx.lineWidth = 3;
+  roundRect(ctx, W / 2 - 350, 30, 700, 130, 25);
+  ctx.stroke();
+
+  // الأعلام
+  const f1 = await loadImageFromUrl(m.logo1).catch(() => null);
+  const f2 = await loadImageFromUrl(m.logo2).catch(() => null);
+  if (f1) ctx.drawImage(f1, W / 2 - 320, 55, 80, 80);
+  if (f2) ctx.drawImage(f2, W / 2 + 240, 55, 80, 80);
+
+  // النتيجة
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 70px LatinFont, ArabicFont, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(homeScore + " - " + awayScore, W / 2, 95);
+
+  // الدقيقة
+  ctx.font = "bold 24px LatinFont, ArabicFont, sans-serif";
+  ctx.fillStyle = "rgba(180, 200, 255, 0.9)";
+  const statusTxt = status === "FT" ? "انتهت" : status === "HT" ? "استراحة" : status === "1H" || status === "2H" ? minute + "'" : "قريباً";
+  ctx.fillText(statusTxt, W / 2, 140);
+
+  // أسماء الفرق
+  ctx.font = "bold 22px LatinFont, ArabicFont, sans-serif";
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "left";
+  ctx.fillText(m.team1.slice(0, 20), W / 2 - 230, 95);
+  ctx.textAlign = "right";
+  ctx.fillText(m.team2.slice(0, 20), W / 2 + 230, 95);
+
+  // ═══ رسم اللاعبين ═══
+  function drawTeamPlayers(teamLineup, side) {
+    if (!teamLineup || !teamLineup.startXI) return;
+    const side_ = side === "home" ? 1 : -1; // 1 = فوق، -1 = تحت
+    const colors = jerseyColor(teamLineup.team?.name || "");
+
+    // نجمع حسب الصفوف
+    const rows = {};
+    for (const p of teamLineup.startXI) {
+      const grid = p.player?.grid;
+      if (!grid) continue;
+      const parts = grid.split(":");
+      const row = parseInt(parts[0]);
+      const col = parseInt(parts[1]);
+      if (isNaN(row) || isNaN(col)) continue;
+      if (!rows[row]) rows[row] = [];
+      rows[row].push({ ...p.player, _col: col, _row: row });
+    }
+
+    const rowKeys = Object.keys(rows).map(Number).sort((a, b) => a - b);
+    const maxRow = rowKeys.length ? Math.max(...rowKeys) : 4;
+
+    const fieldTop = pitchY + 60;
+    const fieldBot = pitchY + pitchH - 60;
+    const fieldH = fieldBot - fieldTop;
+
+    for (const rk of rowKeys) {
+      const players = rows[rk].sort((a, b) => a._col - b._col);
+      const n = players.length;
+
+      // موقع الصف
+      let yPos;
+      if (side === "home") {
+        // فريق فوق: يبدأ من الأعلى
+        const fraction = rk === 1 ? 0.06 : (rk - 1) / (maxRow - 1) * 0.42 + 0.06;
+        yPos = fieldTop + fieldH * fraction;
+      } else {
+        // فريق تحت: يبدأ من الأسفل
+        const fraction = rk === 1 ? 0.94 : 1 - ((rk - 1) / (maxRow - 1) * 0.42 + 0.06);
+        yPos = fieldTop + fieldH * fraction;
+      }
+
+      for (let i = 0; i < n; i++) {
+        const p = players[i];
+        const xFrac = (i + 1) / (n + 1);
+        const xPos = pitchX + pitchW * xFrac;
+
+        // دائرة اللاعب
+        const circleR = 26;
+        ctx.fillStyle = colors.bg;
+        ctx.beginPath();
+        ctx.arc(xPos, yPos, circleR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+
+        // الرقم
+        ctx.fillStyle = colors.text;
+        ctx.font = "bold 24px LatinFont, ArabicFont, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(p.number || "?", xPos, yPos + 1);
+
+        // الاسم
+        ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+        ctx.font = "bold 14px LatinFont, ArabicFont, sans-serif";
+        const fullName = p.name || "";
+        const lastName = fullName.split(" ").slice(-1)[0] || fullName;
+        ctx.fillText(lastName.slice(0, 12), xPos, yPos + circleR + 15);
+
+        // ═══ الأحداث فوق الرأس ═══
+        if (events && events.length) {
+          const myEvents = events.filter((e) => e.player && (e.player.id == p.id || (e.player.name && nameMatch(e.player.name, p.name))));
+          let offsetY = -circleR - 15;
+          for (const ev of myEvents) {
+            const type = ev.type || "";
+            const detail = ev.detail || "";
+            let icon = "";
+            if (type === "Goal") icon = "⚽";
+            else if (type === "Card" && detail === "Yellow Card") icon = "🟨";
+            else if (type === "Card" && detail === "Red Card") icon = "🟥";
+            else if (type === "subst") icon = "🔁";
+
+            if (icon) {
+              ctx.font = "28px sans-serif";
+              ctx.fillText(icon, xPos, offsetY);
+              offsetY -= 32;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (lineup && lineup.length >= 2) {
+    drawTeamPlayers(lineup[0], "home");
+    drawTeamPlayers(lineup[1], "away");
+  } else {
+    // ماكو تشكيلة — نعرض رسالة
+    ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+    ctx.font = "bold 40px LatinFont, ArabicFont, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("⏳ التشكيلة ما نزلت بعد", W / 2, pitchY + pitchH / 2);
+    ctx.font = "bold 24px LatinFont, ArabicFont, sans-serif";
+    ctx.fillStyle = "rgba(180, 200, 255, 0.7)";
+    ctx.fillText("التشكيلة تظهر عادة قبل المباراة بساعة", W / 2, pitchY + pitchH / 2 + 50);
+  }
+
+  // ═══ الفوتر ═══
+  ctx.fillStyle = "rgba(120, 130, 180, 0.5)";
+  ctx.font = "bold 18px LatinFont, ArabicFont, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("MRBOT Live • " + (m.league || ""), W / 2, H - 40);
+
+  return canvas.toBuffer("image/png");
+}
+
+// ═══════════════════════════════════════════
+// 🎨 ألوان المنتخبات
+// ═══════════════════════════════════════════
+const TEAM_COLORS = {
+  "china": { c1: "#c8102e", c2: "#ffd700" },
+  "iraq": { c1: "#ce1126", c2: "#000000" },
+  "saudi arabia": { c1: "#006c35", c2: "#ffffff" },
+  "new zealand": { c1: "#000000", c2: "#ffffff" },
+  "argentina": { c1: "#75aadb", c2: "#ffffff" },
+  "brazil": { c1: "#009c3b", c2: "#ffdf00" },
+  "france": { c1: "#0055a4", c2: "#ef4135" },
+  "germany": { c1: "#000000", c2: "#dd0000" },
+  "spain": { c1: "#aa151b", c2: "#f1bf00" },
+  "italy": { c1: "#0066cc", c2: "#ffffff" },
+  "england": { c1: "#ffffff", c2: "#cf142b" },
+  "portugal": { c1: "#006600", c2: "#ff0000" },
+  "netherlands": { c1: "#ae1c28", c2: "#21468b" },
+  "mexico": { c1: "#006341", c2: "#ce1126" },
+  "usa": { c1: "#3c3b6e", c2: "#b22234" },
+  "japan": { c1: "#0b0f6a", c2: "#bc002d" },
+  "south korea": { c1: "#cd2e3a", c2: "#0047a0" },
+  "morocco": { c1: "#c1272d", c2: "#006233" },
+  "egypt": { c1: "#ce1126", c2: "#000000" },
+  "uruguay": { c1: "#5cbfeb", c2: "#000000" },
+  "belgium": { c1: "#000000", c2: "#fdda24" },
+  "croatia": { c1: "#ff0000", c2: "#171796" },
+  "denmark": { c1: "#c60c30", c2: "#ffffff" },
+  "sweden": { c1: "#006aa7", c2: "#fecc00" },
+  "norway": { c1: "#ba0c2f", c2: "#00205b" },
+  "poland": { c1: "#ffffff", c2: "#dc143c" },
+  "switzerland": { c1: "#d52b1e", c2: "#ffffff" },
+  "austria": { c1: "#ed2939", c2: "#ffffff" },
+  "turkey": { c1: "#e30a17", c2: "#ffffff" },
+  "russia": { c1: "#0039a6", c2: "#d52b1e" },
+  "ukraine": { c1: "#0057b7", c2: "#ffd700" },
+  "australia": { c1: "#00008b", c2: "#ffcd00" },
+  "canada": { c1: "#ff0000", c2: "#ffffff" },
+  "qatar": { c1: "#8a1538", c2: "#ffffff" },
+  "uae": { c1: "#00732f", c2: "#ff0000" },
+  "iran": { c1: "#239f40", c2: "#da0000" },
+  "jordan": { c1: "#007a3d", c2: "#ce1126" },
+  "syria": { c1: "#ce1126", c2: "#000000" },
+  "palestine": { c1: "#007a3d", c2: "#ce1126" },
+  "lebanon": { c1: "#ed1c24", c2: "#ffffff" },
+  "kuwait": { c1: "#007a3d", c2: "#ce1126" },
+  "oman": { c1: "#db161b", c2: "#008000" },
+  "bahrain": { c1: "#ce1126", c2: "#ffffff" },
+  "yemen": { c1: "#ce1126", c2: "#000000" },
+  "algeria": { c1: "#006233", c2: "#d21034" },
+  "tunisia": { c1: "#e70013", c2: "#ffffff" },
+  "nigeria": { c1: "#008751", c2: "#ffffff" },
+  "senegal": { c1: "#00853f", c2: "#fdef42" },
+  "ghana": { c1: "#006b3f", c2: "#fcd116" },
+  "cameroon": { c1: "#007a5e", c2: "#ce1126" },
+  "ivory coast": { c1: "#f77f00", c2: "#009e60" },
+};
+
+function getTeamColors(teamName) {
+  const t = (teamName || "").toLowerCase().trim();
+  for (const k in TEAM_COLORS) {
+    if (t.includes(k) || k.includes(t)) return TEAM_COLORS[k];
+  }
+  return { c1: "#5865f2", c2: "#eb459e" };
+}
+
+function hexToRgba(hex, a) {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return "rgba(" + r + "," + g + "," + b + "," + a + ")";
+}
+
+async function generateMatchCard(m) {
+  const W = 1400, H = 750;
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext("2d");
+
+  const colors1 = getTeamColors(m.team1);
+  const colors2 = getTeamColors(m.team2);
+
+  // ═══ 1) الخلفية ═══
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, "#050816");
+  bg.addColorStop(1, "#0a0f2c");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // ═══ 3) توهج بلون الفريق الأول (يسار) ═══
+  const glowL = ctx.createRadialGradient(280, H/2, 50, 280, H/2, 700);
+  glowL.addColorStop(0, hexToRgba(colors1.c1, 0.85));
+  glowL.addColorStop(0.5, hexToRgba(colors1.c1, 0.3));
+  glowL.addColorStop(1, hexToRgba(colors1.c1, 0));
+  ctx.fillStyle = glowL;
+  ctx.fillRect(0, 0, W/2 + 100, H);
+
+  // ═══ 4) توهج بلون الفريق الثاني (يمين) ═══
+  const glowR = ctx.createRadialGradient(W - 280, H/2, 50, W - 280, H/2, 700);
+  glowR.addColorStop(0, hexToRgba(colors2.c1, 0.85));
+  glowR.addColorStop(0.5, hexToRgba(colors2.c1, 0.3));
+  glowR.addColorStop(1, hexToRgba(colors2.c1, 0));
+  ctx.fillStyle = glowR;
+  ctx.fillRect(W/2 - 100, 0, W/2 + 100, H);
+
+  // ═══ توهج مركزي بين الفريقين ═══
+  const centralGlow = ctx.createRadialGradient(W/2, H/2 + 30, 50, W/2, H/2 + 30, 500);
+  centralGlow.addColorStop(0, hexToRgba(colors1.c1, 0.3));
+  centralGlow.addColorStop(0.4, hexToRgba(colors2.c1, 0.2));
+  centralGlow.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = centralGlow;
+  ctx.fillRect(W/2 - 500, H/2 - 500, 1000, 1000);
+
+  // ═══ 5) شريط علوي وسفلي ═══
+  const topBar = ctx.createLinearGradient(0, 0, W, 0);
+  topBar.addColorStop(0, hexToRgba(colors1.c1, 0));
+  topBar.addColorStop(0.3, hexToRgba(colors1.c1, 1));
+  topBar.addColorStop(0.5, "rgba(255,255,255,1)");
+  topBar.addColorStop(0.7, hexToRgba(colors2.c1, 1));
+  topBar.addColorStop(1, hexToRgba(colors2.c1, 0));
+  ctx.fillStyle = topBar;
+  ctx.fillRect(0, 0, W, 5);
+  ctx.fillRect(0, H - 5, W, 5);
+
+  // ═══ 6) الشعارات ═══
+  const [img1, img2] = await Promise.all([
+    loadImageFromUrl(m.logo1),
+    loadImageFromUrl(m.logo2),
+  ]);
+
+  const cx1 = 250;
+  const cx2 = W - 250;
+  const cy = H / 2 - 30;
+  const hexR = 135;
+
+  function drawHex(cx, cy, r) {
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const ang = (Math.PI / 3) * i - Math.PI / 6;
+      const x = cx + r * Math.cos(ang);
+      const y = cy + r * Math.sin(ang);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+  }
+
+  // هالة الفريق الأول
+  const halo1 = ctx.createRadialGradient(cx1, cy, hexR - 20, cx1, cy, hexR + 90);
+  halo1.addColorStop(0, hexToRgba(colors1.c1, 0.85));
+  halo1.addColorStop(1, hexToRgba(colors1.c1, 0));
+  ctx.fillStyle = halo1;
+  ctx.beginPath();
+  ctx.arc(cx1, cy, hexR + 90, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.save();
+  drawHex(cx1, cy, hexR + 15);
+  ctx.fillStyle = "rgba(15, 20, 45, 0.95)";
+  ctx.fill();
+  ctx.strokeStyle = hexToRgba(colors1.c1, 1);
+  ctx.lineWidth = 5;
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  drawHex(cx1, cy, hexR);
+  ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
+  ctx.fill();
+  ctx.clip();
+  if (img1) {
+    const pad = 20;
+    const maxW = (hexR - pad) * 2;
+    const maxH = (hexR - pad) * 2;
+    const ratio = Math.min(maxW / img1.width, maxH / img1.height);
+    ctx.drawImage(img1, cx1 - (img1.width * ratio) / 2, cy - (img1.height * ratio) / 2, img1.width * ratio, img1.height * ratio);
+  }
+  ctx.restore();
+
+  // هالة الفريق الثاني
+  const halo2 = ctx.createRadialGradient(cx2, cy, hexR - 20, cx2, cy, hexR + 90);
+  halo2.addColorStop(0, hexToRgba(colors2.c1, 0.85));
+  halo2.addColorStop(1, hexToRgba(colors2.c1, 0));
+  ctx.fillStyle = halo2;
+  ctx.beginPath();
+  ctx.arc(cx2, cy, hexR + 90, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.save();
+  drawHex(cx2, cy, hexR + 15);
+  ctx.fillStyle = "rgba(15, 20, 45, 0.95)";
+  ctx.fill();
+  ctx.strokeStyle = hexToRgba(colors2.c1, 1);
+  ctx.lineWidth = 5;
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  drawHex(cx2, cy, hexR);
+  ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
+  ctx.fill();
+  ctx.clip();
+  if (img2) {
+    const pad = 20;
+    const maxW = (hexR - pad) * 2;
+    const maxH = (hexR - pad) * 2;
+    const ratio = Math.min(maxW / img2.width, maxH / img2.height);
+    ctx.drawImage(img2, cx2 - (img2.width * ratio) / 2, cy - (img2.height * ratio) / 2, img2.width * ratio, img2.height * ratio);
+  }
+  ctx.restore();
+
+  // ═══ 7) أسماء الفرق ═══
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  const nameY = cy + hexR + 70;
+
+  ctx.font = "bold 42px LatinFont, ArabicFont, sans-serif";
+  fitFont(ctx, m.team1, 450, 42);
+  const tw1 = ctx.measureText(m.team1).width;
+  ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
+  roundRect(ctx, cx1 - tw1 / 2 - 25, nameY - 30, tw1 + 50, 60, 15);
+  ctx.fill();
+  ctx.strokeStyle = hexToRgba(colors1.c1, 1);
+  ctx.lineWidth = 3;
+  roundRect(ctx, cx1 - tw1 / 2 - 25, nameY - 30, tw1 + 50, 60, 15);
+  ctx.stroke();
+  ctx.fillStyle = "#ffffff";
+  ctx.shadowColor = hexToRgba(colors1.c1, 1);
+  ctx.shadowBlur = 15;
+  ctx.fillText(m.team1, cx1, nameY);
+  ctx.shadowBlur = 0;
+
+  ctx.font = "bold 42px LatinFont, ArabicFont, sans-serif";
+  fitFont(ctx, m.team2, 450, 42);
+  const tw2 = ctx.measureText(m.team2).width;
+  ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
+  roundRect(ctx, cx2 - tw2 / 2 - 25, nameY - 30, tw2 + 50, 60, 15);
+  ctx.fill();
+  ctx.strokeStyle = hexToRgba(colors2.c1, 1);
+  ctx.lineWidth = 3;
+  roundRect(ctx, cx2 - tw2 / 2 - 25, nameY - 30, tw2 + 50, 60, 15);
+  ctx.stroke();
+  ctx.fillStyle = "#ffffff";
+  ctx.shadowColor = hexToRgba(colors2.c1, 1);
+  ctx.shadowBlur = 15;
+  ctx.fillText(m.team2, cx2, nameY);
+  ctx.shadowBlur = 0;
+
+  // ═══ 8) الوقت في الوسط ═══
+  const iraq = new Date(m.startTime + 3 * 3600 * 1000);
+  const dayNames = ["الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
+  const monthNames = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];
+  const dayName = dayNames[iraq.getUTCDay()];
+  const monthName = monthNames[iraq.getUTCMonth()];
+  const dayNum = iraq.getUTCDate();
+  const year = iraq.getUTCFullYear();
+  const hour = iraq.getUTCHours();
+  const min = String(iraq.getUTCMinutes()).padStart(2, "0");
+  const ampm = hour >= 12 ? "م" : "ص";
+  const h12 = hour % 12 || 12;
+
+  // خلفية الوقت (زجاجية وسط الصورة)
+  const timeBoxY = cy + 30;
+  ctx.save();
+  ctx.fillStyle = "rgba(15, 20, 50, 0.92)";
+  roundRect(ctx, W / 2 - 200, timeBoxY - 80, 400, 160, 22);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(180, 200, 255, 0.7)";
+  ctx.lineWidth = 3;
+  roundRect(ctx, W / 2 - 200, timeBoxY - 80, 400, 160, 22);
+  ctx.stroke();
+  ctx.restore();
+
+  // الوقت (كبير في الوسط)
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 90px LatinFont, ArabicFont, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = "rgba(120, 160, 255, 1)";
+  ctx.shadowBlur = 30;
+  ctx.fillText(h12 + ":" + min, W / 2, timeBoxY - 10);
+  ctx.shadowBlur = 0;
+
+  // ص/م
+  ctx.font = "bold 32px LatinFont, ArabicFont, sans-serif";
+  ctx.fillStyle = "rgba(200, 215, 255, 0.9)";
+  ctx.fillText(ampm, W / 2, timeBoxY + 45);
+
+  // ═══ 9) التاريخ تحت ═══
+  const dateY = timeBoxY + 130;
+  ctx.font = "bold 26px LatinFont, ArabicFont, sans-serif";
+  ctx.fillStyle = "rgba(200, 215, 255, 0.85)";
+  ctx.fillText(dayName + " " + dayNum + " " + monthName + " " + year, W / 2, dateY);
+
+  // ═══ 10) الدوري (أعلى) ═══
+  if (m.league) {
+    const lgTxt = m.league;
+    ctx.font = "bold 22px LatinFont, ArabicFont, sans-serif";
+    const tw = ctx.measureText(lgTxt).width;
+    const pillW = tw + 80;
+    const pillX = W / 2 - pillW / 2;
+    const pillY = 40;
+
+    const pillGrad = ctx.createLinearGradient(pillX, 0, pillX + pillW, 0);
+    pillGrad.addColorStop(0, hexToRgba(colors1.c1, 0.8));
+    pillGrad.addColorStop(0.5, "rgba(80, 80, 160, 0.9)");
+    pillGrad.addColorStop(1, hexToRgba(colors2.c1, 0.8));
+    ctx.fillStyle = pillGrad;
+    roundRect(ctx, pillX, pillY, pillW, 55, 28);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(220, 230, 255, 0.9)";
+    ctx.lineWidth = 2.5;
+    roundRect(ctx, pillX, pillY, pillW, 55, 28);
+    ctx.stroke();
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 22px LatinFont, ArabicFont, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("🏆 " + lgTxt, W / 2, pillY + 28);
+  }
+
+  // ═══ 11) المتوقعين ═══
+  const predsCount = Object.keys(m.predictions || {}).length;
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(200, 215, 255, 0.9)";
+  ctx.font = "bold 20px LatinFont, ArabicFont, sans-serif";
+  ctx.fillText("🎯 المتوقعين: " + predsCount, W / 2, H - 50);
+
+  ctx.fillStyle = "rgba(140, 160, 220, 0.5)";
+  ctx.font = "bold 14px LatinFont, ArabicFont, sans-serif";
+  ctx.fillText("MRBOT • 2026", W / 2, H - 20);
+
+  return canvas.toBuffer("image/png");
+}
+
+// ═══════════════════════════════════════════════
+// 📢 نظام الإشعارات
+// ═══════════════════════════════════════════════
+const NOTIF_FILE = require("path").join(__dirname, "data", "notifications.json");
+function loadNotifData() {
+  try {
+    if (fs.existsSync(NOTIF_FILE)) return JSON.parse(fs.readFileSync(NOTIF_FILE, "utf8"));
+  } catch (e) { console.log("notif load err:", e.message); }
+  return { subs: [] };
+}
+function saveNotifData() {
+  try {
+    const dir = require("path").dirname(NOTIF_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(NOTIF_FILE, JSON.stringify(notifData, null, 2));
+  } catch (e) { console.log("notif save err:", e.message); }
+}
+let notifData = loadNotifData();
+
+const PLATFORMS = [
+  { id: "youtube", name: "YouTube", emoji: "▶️", color: 0xff0000, desc: "اسم القناة أو @handle", types: ["video", "live"] },
+  { id: "twitch", name: "Twitch", emoji: "🟣", color: 0x9146ff, desc: "اسم المستخدم", types: ["live"] },
+  { id: "kick", name: "Kick", emoji: "🟢", color: 0x53fc18, desc: "اسم المستخدم", types: ["live"] },
+  { id: "tiktok", name: "TikTok", emoji: "🎵", color: 0xff0050, desc: "اسم المستخدم بدون @", types: ["video", "live"] },
+];
+
+// ═══════════════════════════════════════════════
+// 📝 قوالب الإشعارات الافتراضية
+// ⚠️ بدّل PUT_ID_HERE بـ ID الإيموجي الفعلي
+// ⚠️ بدّل ROLE_ID بـ ID الرتبة الفعلي
+// ═══════════════════════════════════════════════
+const EMOJI_IDS = {
+  kick: "1553356411881390182",
+  youtube: "1553356407695351898",
+  tiktok: "1553751858135437332",
+  twitch: "1553751846429003829",
+};
+
+const NOTIF_TEMPLATES = {
+  "kick_live": {
+    emoji: "<:images_1:" + EMOJI_IDS.kick + ">",
+    text: "حالين بث عله منصة الكيك",
+    role: "1553752105314029649",
+  },
+  "tiktok_video": {
+    emoji: "<:images_23:" + EMOJI_IDS.tiktok + ">",
+    text: "نشر فيديو في التيك توك",
+    role: "1553752105314029649",
+  },
+  "tiktok_live": {
+    emoji: "<:images_23:" + EMOJI_IDS.tiktok + ">",
+    text: "حالين بث على منصة التيك توك",
+    role: "1530545983149309992",
+  },
+  "twitch_live": {
+    emoji: "<:images_24:" + EMOJI_IDS.twitch + ">",
+    text: "رتبة لايف",
+    role: "1530545983149309992",
+  },
+  "youtube_video": {
+    emoji: "<:images_2:" + EMOJI_IDS.youtube + ">",
+    text: "نشر فيديو جديد على يوتيوب",
+    role: "1553752105314029649",
+  },
+  "youtube_live": {
+    emoji: "<:images_2:" + EMOJI_IDS.youtube + ">",
+    text: "بدأ بث مباشر على يوتيوب",
+    role: "1530545983149309992",
+  },
+};
+
+function buildNotifContent(sub) {
+  // إذا المستخدم كتب رسالة مخصصة كاملة → استخدمها
+  if (sub.customMessage && sub.customMessage.length > 0) {
+    return sub.customMessage;
+  }
+  // نجيب القالب حسب المنصة والنوع
+  const type = sub.type || "live";
+  const key = sub.platform + "_" + type;
+  const tpl = NOTIF_TEMPLATES[key];
+  if (!tpl) return null;
+
+  // الاسم: customName أو username
+  const name = sub.customName || sub.username;
+  return tpl.emoji + " **" + name + "** " + tpl.text + " <@&" + tpl.role + ">";
+}
+
+const TYPE_LABELS = {
+  video: { name: "فيديوهات", emoji: "🎬", desc: "عند نشر فيديو جديد" },
+  live: { name: "بث مباشر", emoji: "🔴", desc: "عند بدء بث مباشر" },
+};
+
+function getPlatform(id) { return PLATFORMS.find((p) => p.id === id); }
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildPresences,
+  ],
+  partials: [Partials.Channel, Partials.Message, Partials.User],
+});
+
+function getFeatures(uid) {
+  if (uid === OWNER_ID) return new Set(["convert","delete","giphy","admin"]);
+  if (ALLOWED.includes(uid)) return new Set(["convert","delete","giphy"]);
+  const m = members.get(uid);
+  return m ? new Set(m.features) : null;
+}
+function isAllowed(id) {
+  return ALLOWED.includes(id) || members.has(id);
+}
+function hasFeature(uid, feat) {
+  const f = getFeatures(uid);
+  return f ? f.has(feat) : false;
+}
+function checkFeature(id, uid) {
+  if (!id) return true;
+  if (id === "main_menu" || id === "panel_back" || id.startsWith("stk_page_")) return true;
+  if (id.startsWith("cat_")) return hasFeature(uid, "giphy");
+  const map = {
+    panel_convert:"convert", conv_emoji:"convert", conv_emoji_static:"convert",
+    conv_sticker:"convert", conv_sticker_static:"convert",
+    conv_more:"convert", conv_reset:"convert",
+    panel_stickers:"delete", list_stickers:"delete", list_emojis:"delete",
+    stk_delete_selected:"delete", stk_delete_all:"delete",
+    panel_giphy:"giphy", giphy_retry:"giphy",
+    panel_add_member:"admin", panel_add_roles:"admin", 
+    main_menu:"public", panel_channels:"admin", panel_notifications:"admin", notif_add:"admin", notif_list:"admin", notif_remove:"admin", notif_plat:"admin", notif_check_now:"admin", notif_edit_msg:"admin", notif_edit_plat:"admin", notif_back:"admin", chan_add:"admin", chan_del:"admin", chan_backup:"admin", chan_back:"admin",
+    panel_broadcast:"admin", bc_send:"admin", bc_cancel:"admin", bc_back:"admin",
+    panel_matches:"admin", match_add:"admin", match_list:"admin", match_del:"admin", match_back:"admin",
+    panel_auto_matches:"admin", auto_set_ch:"admin", auto_refresh:"admin", auto_view:"admin", auto_clear:"admin", auto_test:"admin",
+    member_features:"admin", member_confirm:"admin", member_cancel:"admin",
+  };
+  const f = map[id];
+  return f ? hasFeature(uid, f) : true;
+}
+
+function buildGiphyPreviewEmbeds(items, query) {
+  const embeds = [];
+  const max = Math.min(items.length, 10);
+  for (let i = 0; i < max; i++) {
+    const e = new EmbedBuilder().setColor(0x5865f2).setImage(items[i].url);
+    if (i === 0) {
+      e.setTitle("🔎 " + query + " — " + items.length + " ملصق");
+      e.setDescription("👇 إذا عجبك الملصقات اختر نوع الإضافة، وإذا ما عجبك اضغط **إعادة**");
+    }
+    e.setFooter({ text: "#" + (i + 1) });
+    embeds.push(e);
+  }
+  return embeds;
+}
+
+function buildGiphyActionRows() {
+  const r1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("giphy_retry").setLabel("إعادة").setEmoji("🔄").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("conv_emoji").setLabel("إيموجي متحرك").setEmoji("🙂").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("conv_emoji_static").setLabel("إيموجي ثابت").setEmoji("🖼️").setStyle(ButtonStyle.Primary),
+  );
+  const r2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("conv_sticker").setLabel("ستيكر متحرك").setEmoji("🏷️").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("conv_sticker_static").setLabel("ستيكر ثابت").setEmoji("📌").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("conv_reset").setLabel("إلغاء").setEmoji("✖️").setStyle(ButtonStyle.Danger),
+  );
+  return [r1, r2];
+}
+
+async function sendGiphyPreview(target, session) {
+  const embeds = buildGiphyPreviewEmbeds(session.attachments, session.giphyQuery);
+  const rows = buildGiphyActionRows();
+  return target.edit({ content: "", embeds, components: rows });
+}
+
+async function translateToEnglish(text) {
+  try {
+    const url = "https://api.mymemory.translated.net/get?q=" + encodeURIComponent(text) + "&langpair=ar|en";
+    const res = await fetch(url);
+    const data = await res.json();
+    const out = data?.responseData?.translatedText;
+    if (out && typeof out === "string" && out.length > 0 && !out.includes("MYMEMORY WARNING")) {
+      return out;
+    }
+    return null;
+  } catch (e) { return null; }
+}
+
+async function giphySearchOnce(query, limit, offset, lang) {
+  const key = process.env.GIPHY_KEY;
+  if (!key) return null;
+  const safeLimit = Math.min(Math.max(limit, 1), 50);
+  const off = Math.max(0, parseInt(offset) || 0);
+  const url = "https://api.giphy.com/v1/stickers/search?api_key=" + key +
+    "&q=" + encodeURIComponent(query) +
+    "&limit=" + safeLimit +
+    "&offset=" + off +
+    "&rating=pg-13&lang=" + lang;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!data.data || !data.data.length) return [];
+    return data.data.map((g) => ({
+      url: g.images.fixed_height_small?.url || g.images.fixed_height?.url || g.images.original.url,
+      emojiUrl: g.images.fixed_height_small?.url || g.images.fixed_height?.url,
+      stickerUrl: g.images.downsized?.url || g.images.fixed_height?.url,
+      staticUrl: g.images.fixed_height_small_still?.url || g.images.fixed_height_still?.url || g.images.original_still?.url || g.images.fixed_height_small?.url,
+      _id: g.id,
+    }));
+  } catch (e) {
+    console.log("❌ Giphy error:", e.message);
+    return [];
+  }
+}
+
+async function searchGiphy(query, limit, offset) {
+  const safeLimit = Math.min(Math.max(limit, 1), 50);
+  const off = Math.max(0, parseInt(offset) || 0);
+
+  // تنظيف الكلمة: نشيل التشكيل والرموز الزائدة
+  let q = query.trim().replace(/[\u064B-\u065F\u0670]/g, "").replace(/\s+/g, " ");
+  if (!q) q = query;
+
+  const hasArabic = /[\u0600-\u06FF]/.test(q);
+
+  // 1) جرب البحث الأصلي
+  let results = await giphySearchOnce(q, safeLimit, off, hasArabic ? "ar" : "en");
+
+  // 2) إذا عربي ونتائج قليلة → نترجم للإنجليزي
+  let usedQuery = q;
+  if (hasArabic && results.length < Math.ceil(safeLimit / 2)) {
+    const translated = await translateToEnglish(q);
+    if (translated && translated !== q) {
+      console.log("🌐 ترجمة: " + q + " → " + translated);
+      const tr = await giphySearchOnce(translated, safeLimit, off, "en");
+      // دمج: ناخذ العربي أولاً، بعدين الإنجليزي (بدون تكرار)
+      const seen = new Set(results.map((r) => r._id));
+      for (const r of tr) {
+        if (!seen.has(r._id)) { results.push(r); seen.add(r._id); }
+      }
+      usedQuery = translated;
+    }
+  }
+
+  // 3) إذا بعدها فاضي → نجرب trending
+  if (results.length === 0) {
+    const key = process.env.GIPHY_KEY;
+    if (key) {
+      try {
+        const url = "https://api.giphy.com/v1/stickers/trending?api_key=" + key + "&limit=" + safeLimit + "&rating=pg-13";
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.data && data.data.length) {
+          results = data.data.map((g) => ({
+            url: g.images.fixed_height_small?.url || g.images.fixed_height?.url,
+            emojiUrl: g.images.fixed_height_small?.url || g.images.fixed_height?.url,
+            stickerUrl: g.images.downsized?.url || g.images.fixed_height?.url,
+            staticUrl: g.images.fixed_height_small_still?.url || g.images.fixed_height_still?.url || g.images.fixed_height_small?.url,
+            _id: g.id,
+          }));
+          console.log("🔥 رجعت trending بدل البحث");
+        }
+      } catch {}
+    }
+  }
+
+  if (!results.length) return null;
+
+  // نحدد الاسم النهائي
+  let clean = usedQuery.replace(/[^a-zA-Z0-9]/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "").slice(0, 18);
+  if (!clean) clean = "pack";
+
+  return results.slice(0, safeLimit).map((r, i) => ({
+    url: r.url,
+    emojiUrl: r.emojiUrl,
+    stickerUrl: r.stickerUrl,
+    staticUrl: r.staticUrl,
+    name: (clean + "_" + (i + 1)).slice(0, 30),
+  }));
+}
+
+function buildMemberPanel(pending) {
+  const embed = new EmbedBuilder()
+    .setColor(0x57f287)
+    .setTitle("➕ إضافة عضو")
+    .setDescription("👤 العضو: **" + pending.tag + "**\n🆔 " + pending.id + "\n\nاختار الأنظمة:");
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("member_features")
+    .setPlaceholder("اختار الأنظمة")
+    .setMinValues(1).setMaxValues(3);
+  menu.addOptions(
+    new StringSelectMenuOptionBuilder().setLabel("تحويل صور").setValue("convert").setEmoji("🖼️").setDefault(pending.features.includes("convert")),
+    new StringSelectMenuOptionBuilder().setLabel("حذف ملصقات وايموجي").setValue("delete").setEmoji("🗑️").setDefault(pending.features.includes("delete")),
+    new StringSelectMenuOptionBuilder().setLabel("بحث ملصقات").setValue("giphy").setEmoji("🔎").setDefault(pending.features.includes("giphy"))
+  );
+  const r1 = new ActionRowBuilder().addComponents(menu);
+  const r2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("member_confirm").setLabel("تأكيد وإرسال").setEmoji("✅").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("member_cancel").setLabel("إلغاء").setEmoji("✖️").setStyle(ButtonStyle.Danger)
+  );
+  return { embeds: [embed], components: [r1, r2] };
+}
+
+function stickersMenuPanel(uid) {
+  const f = getFeatures(uid) || new Set();
+  const stats = getGuildStats();
+
+  const embed = buildPanelEmbed({
+    icon: "🏷️",
+    title: "إدارة الملصقات والإيموجيات",
+    color: PANEL_COLORS.stickers,
+    description:
+      "### 🏷️ إدارة محتوى السيرفر\n" +
+      "> تحكم كامل بالملصقات والإيموجيات\n\u200b",
+    stats: stats ? [
+      { emoji: "😀", label: "الإيموجيات الحالية", value: stats.emojis },
+      { emoji: "🎨", label: "الملصقات الحالية   ", value: stats.stickers },
+    ] : [],
+    fields: [
+      { name: "🖼️ تحويل", value: "> تحويل صور إلى إيموجي/ستيكر", inline: true },
+      { name: "🗑️ حذف", value: "> حذف بالأرقام", inline: true },
+      { name: "🔎 بحث", value: "> بحث Giphy متقدم", inline: true },
+    ],
+  });
+
+  const btns = [];
+  if (f.has("delete")) btns.push(new ButtonBuilder().setCustomId("panel_stickers").setLabel("حذف").setEmoji("🗑️").setStyle(ButtonStyle.Danger));
+  if (f.has("giphy")) btns.push(new ButtonBuilder().setCustomId("panel_giphy").setLabel("بحث").setEmoji("🔎").setStyle(ButtonStyle.Primary));
+  if (f.has("convert")) btns.push(new ButtonBuilder().setCustomId("panel_convert").setLabel("تحويل صور").setEmoji("🖼️").setStyle(ButtonStyle.Success));
+  btns.push(new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary));
+
+  const rows = [];
+  for (let i = 0; i < btns.length; i += 5) rows.push(new ActionRowBuilder().addComponents(btns.slice(i, i + 5)));
+
+  return { embeds: [embed], components: rows };
+}
+
+function onboardingPanel() {
+  const embed = new EmbedBuilder().setColor(0x9b59b6).setTitle("⚙️ نظام الاختيارات")
+    .setDescription(
+      "الحالة: " + (onboarding.enabled ? "🟢 مفعّل" : "🔴 مطفي") + "\n" +
+      "عدد الأسئلة: **" + onboarding.questions.length + "**"
+    );
+  const btns = [
+    new ButtonBuilder().setCustomId("onb_add").setLabel("إضافة سؤال").setEmoji("➕").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("onb_list").setLabel("عرض الأسئلة").setEmoji("📋").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("onb_toggle").setLabel(onboarding.enabled ? "اطفاء" : "تفعيل").setEmoji(onboarding.enabled ? "🔴" : "🟢").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary),
+  ];
+  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(btns)] };
+}
+
+function channelsMenuPanel() {
+  const stats = getGuildStats();
+
+  const embed = buildPanelEmbed({
+    icon: "📁",
+    title: "إدارة الرومات والقنوات",
+    color: PANEL_COLORS.channels,
+    description:
+      "### 📁 تحكم كامل بالرومات\n" +
+      "> إضافة، تعديل، حذف الرومات + نسخ احتياطي مشفر\n\u200b",
+    stats: stats ? [
+      { emoji: "📁", label: "القنوات الكلية   ", value: stats.channels },
+      { emoji: "💬", label: "الرومات         ", value: stats.rooms || 0 },
+    ] : [],
+    fields: [
+      { name: "➕ إضافة", value: "> رومات جديدة دفعة وحدة\n> استخدم ! للقناة و . للروم", inline: true },
+      { name: "✏️ تعديل", value: "> تغيير اسم أي روم/قناة\n> بأرقام مرجعية", inline: true },
+      { name: "🗑️ حذف", value: "> حذف رومات محددة\n> بالأرقام المرجعية", inline: true },
+      { name: "💾 نسخ احتياطي", value: "> حفظ كامل للرومات\n> بصيغة JSON محمية", inline: true },
+    ],
+  });
+
+  const r1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("chan_add").setLabel("إضافة").setEmoji("➕").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("chan_edit").setLabel("تعديل").setEmoji("✏️").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("chan_del").setLabel("حذف").setEmoji("🗑️").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("chan_backup").setLabel("نسخ احتياطي").setEmoji("💾").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary),
+  );
+
+  return { embeds: [embed], components: [r1] };
+}
+
+function ensureBackupDir() {
+  const dir = path.join(__dirname, "data", "backups");
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(dir, 0o700); } catch {}
+  return dir;
+}
+
+async function getChannelsData(client) {
+  let guild = client.guilds.cache.get(GUILD_ID);
+  if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+  if (!guild) return null;
+  await guild.channels.fetch().catch(() => {});
+
+  const ignoreIds = [guild.rulesChannelId, guild.publicUpdatesChannelId, guild.systemChannelId, guild.afkChannelId].filter(Boolean);
+
+  const cats = [...guild.channels.cache.values()]
+    .filter((c) => c.type === 4)
+    .sort((a, b) => a.position - b.position)
+    .map((cat, ci) => {
+      const rooms = [...guild.channels.cache.values()]
+        .filter((c) => c.type !== 4 && c.parentId === cat.id)
+        .sort((a, b) => a.position - b.position)
+        .map((c, ri) => ({
+          id: c.id,
+          name: c.name,
+          type: c.type === 2 ? "voice" : c.type === 5 ? "announcement" : "text",
+          catIdx: ci + 1,
+          roomIdx: ri + 1,
+        }));
+      return { id: cat.id, name: cat.name, idx: ci + 1, rooms };
+    });
+
+  const orphans = [...guild.channels.cache.values()]
+    .filter((c) => c.type !== 4 && !c.parentId && !ignoreIds.includes(c.id))
+    .sort((a, b) => a.position - b.position)
+    .map((c, ri) => ({
+      id: c.id,
+      name: c.name,
+      type: c.type === 2 ? "voice" : "text",
+      catIdx: 0,
+      roomIdx: ri + 1,
+    }));
+
+  return { guild, cats, orphans, ignoreIds };
+}
+
+function buildChannelsTree(data, title, color) {
+  const { cats, orphans } = data;
+  const lines = [];
+  lines.push("📁 **القنوات** (" + cats.length + ")");
+  for (const cat of cats) {
+    lines.push("**[C" + cat.idx + "]** 📁 " + cat.name + "  \`" + cat.id + "\`");
+    if (cat.rooms.length === 0) {
+      lines.push("   " + "_ماكو رومات_");
+    } else {
+      for (const r of cat.rooms) {
+        const icon = r.type === "voice" ? "🔊" : r.type === "announcement" ? "📢" : "💬";
+        lines.push("   [" + cat.idx + ":" + r.roomIdx + "] " + icon + " " + r.name);
+      }
+    }
+  }
+  if (orphans.length > 0) {
+    lines.push("");
+    lines.push("📁 **رومات بدون قناة** (" + orphans.length + ")");
+    for (const r of orphans) {
+      const icon = r.type === "voice" ? "🔊" : "💬";
+      lines.push("   [0:" + r.roomIdx + "] " + icon + " " + r.name);
+    }
+  }
+  const embed = new EmbedBuilder()
+    .setColor(color || 0x3498db)
+    .setTitle(title)
+    .setDescription(lines.join("\n").slice(0, 3000))
+    .setFooter({ text: "MRBOT Channels" });
+  return embed;
+}
+
+function buildChannelPreview(channels, categories) {
+  const lines = [];
+  for (const cat of categories) {
+    lines.push("📁 **" + cat.name + "**");
+    for (const ch of cat.channels) lines.push("   💬 " + ch.name);
+  }
+  if (categories.length === 0 && channels.length > 0) lines.push("**رومات بدون قناة:**");
+  for (const ch of channels) lines.push("💬 " + ch.name);
+
+  const embed = new EmbedBuilder()
+    .setColor(0x2ecc71)
+    .setTitle("➕ إضافة رومات")
+    .setDescription(
+      "**الرومات اللي راح تنسوي:**\n\n" +
+      (lines.join("\n") || "ماكو شي") +
+      "\n\n**القنوات:** " + categories.length + " | **الرومات:** " + channels.length
+    );
+  return embed;
+}
+
+// ═══════════════════════════════════════════════
+// 🎨 نظام التصميم الموحّد للوحات
+// ═══════════════════════════════════════════════
+
+const PANEL_COLORS = {
+  main: 0x5865f2,
+  convert: 0x57f287,
+  stickers: 0xeb459e,
+  channels: 0x3498db,
+  roles: 0x9b59b6,
+  members: 0xfee75c,
+  broadcast: 0xe74c3c,
+  matches: 0x2ecc71,
+  danger: 0xff6b6b,
+  warn: 0xffaa00,
+};
+
+const PANEL_ICONS = {
+  main: "🎛️",
+  convert: "🖼️",
+  stickers: "🏷️",
+  channels: "📁",
+  roles: "🎭",
+  members: "👥",
+  broadcast: "📢",
+  matches: "⚽",
+  danger: "🗑️",
+};
+
+function buildPanelEmbed(opts) {
+  const {
+    icon = "🎛️",
+    title = "لوحة التحكم",
+    description = "",
+    color = PANEL_COLORS.main,
+    fields = [],
+    stats = null,
+    footer = "MRBOT • v2.0",
+    thumbnail = true,
+    timestamp = true,
+  } = opts;
+
+  const embed = new EmbedBuilder()
+    .setColor(color)
+    .setAuthor({ name: icon + "  " + title })
+    .setDescription(description)
+    .setFooter({ text: footer });
+
+  // الإحصائيات على شكل شبكة أنيقة
+  if (stats && stats.length) {
+    const lines = [];
+    lines.push("**╭──────────── 📊 ────────────╮**");
+    for (const st of stats) {
+      const val = String(st.value || 0).padStart(6, " ");
+      lines.push("**│** " + (st.emoji || "▪️") + "  **" + st.label + "**  \`" + val + "\`");
+    }
+    lines.push("**╰──────────────────────────╯**");
+    embed.addFields({ name: "\u200b", value: lines.join("\n") });
+  }
+
+  // حقول إضافية
+  for (const f of fields) {
+    embed.addFields({ name: f.name, value: f.value, inline: f.inline || false });
+  }
+
+  if (thumbnail) {
+    try {
+      const g = client.guilds.cache.get(GUILD_ID);
+      if (g && g.iconURL()) embed.setThumbnail(g.iconURL({ size: 256 }));
+    } catch {}
+  }
+
+  if (timestamp) embed.setTimestamp();
+
+  return embed;
+}
+
+function getGuildStats() {
+  try {
+    const g = client.guilds.cache.get(GUILD_ID);
+    if (!g) return null;
+    return {
+      members: g.memberCount || 0,
+      online: g.members.cache.filter((m) => m.presence && m.presence.status !== "offline").size || 0,
+      roles: g.roles.cache.size || 0,
+      emojis: g.emojis.cache.size || 0,
+      stickers: g.stickers.cache.size || 0,
+      boosts: g.premiumSubscriptionCount || 0,
+      tier: g.premiumTier || 0,
+      channels: [...g.channels.cache.values()].filter((c) => c.type === 4).length || 0,
+      rooms: [...g.channels.cache.values()].filter((c) => c.type !== 4).length || 0,
+      name: g.name,
+      icon: g.iconURL({ size: 256 }),
+    };
+  } catch (e) { return null; }
+}
+
+function notificationsPanel() {
+  const subCount = notifData.subs.length;
+  const embed = buildPanelEmbed({
+    icon: "📢",
+    title: "نظام الإشعارات",
+    color: 0xeb459e,
+    description:
+      "### 📢 مراقبة المنصات\n" +
+      "> البوت يراقب الحسابات ويرسل إشعار عند:\n" +
+      "> • **نشر فيديو جديد** (YouTube, TikTok)\n" +
+      "> • **بداية بث مباشر** (YouTube, Twitch, Kick, TikTok)\n\u200b",
+    stats: [
+      { emoji: "📋", label: "الاشتراكات النشطة", value: subCount },
+    ],
+    fields: [
+      { name: "▶️ YouTube", value: "> 🎬 فيديو + 🔴 بث", inline: true },
+      { name: "🟣 Twitch", value: "> 🔴 بث مباشر", inline: true },
+      { name: "🟢 Kick", value: "> 🔴 بث مباشر", inline: true },
+      { name: "🎵 TikTok", value: "> 🎬 فيديو + 🔴 بث", inline: true },
+    ],
+    footer: "MRBOT Notifications • كل 5 دقائق",
+  });
+
+  const r1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("notif_add").setLabel("إضافة اشتراك").setEmoji("➕").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("notif_list").setLabel("عرض الاشتراكات").setEmoji("📋").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("notif_remove").setLabel("حذف اشتراك").setEmoji("🗑️").setStyle(ButtonStyle.Danger),
+  );
+  const r2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("notif_check_now").setLabel("مراجعة فورية").setEmoji("⚡").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("notif_edit_msg").setLabel("تعديل الرسالة").setEmoji("✏️").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary),
+  );
+
+  return { embeds: [embed], components: [r1, r2] };
+}
+
+function mainPanel(uid) {
+  const f = getFeatures(uid) || new Set();
+  const stats = getGuildStats();
+
+  const now = new Date();
+  const iraq = new Date(now.getTime() + 3 * 3600 * 1000);
+  const hour = iraq.getUTCHours();
+  const greeting = hour < 5 ? "🌙 ليلة هادئة" : hour < 12 ? "☀️ صباح الخير" : hour < 17 ? "🌤️ مساء النور" : hour < 21 ? "🌆 مساء الخير" : "🌙 مساء الخير";
+  const timeStr = String(iraq.getUTCHours()).padStart(2, "0") + ":" + String(iraq.getUTCMinutes()).padStart(2, "0");
+
+  const statLines = stats ? [
+    { emoji: "👥", label: "الأعضاء الكلي   ", value: stats.members },
+    { emoji: "🟢", label: "المتصلين حالياً  ", value: stats.online },
+    { emoji: "🎭", label: "الرتب            ", value: stats.roles },
+    { emoji: "😀", label: "الإيموجيات      ", value: stats.emojis },
+    { emoji: "🎨", label: "الملصقات        ", value: stats.stickers },
+    { emoji: "💎", label: "البوستات        ", value: stats.boosts + " (T" + stats.tier + ")" },
+  ] : [];
+
+  const embed = buildPanelEmbed({
+    icon: "🎛️",
+    title: "لوحة التحكم الرئيسية",
+    color: PANEL_COLORS.main,
+    description:
+      "### 🏠 " + (stats ? stats.name : "MR AWSY Community") + "\n" +
+      "> **" + greeting + "**  •  ⏰ \`" + timeStr + "\` (بغداد)\n" +
+      "> اختر الخدمة من القائمة بالأسفل 👇\n\u200b",
+    stats: statLines,
+    fields: [
+      {
+        name: "📌 حالة النظام",
+        value: "> **البوت:**  " + (paused ? "🔴 مطفي" : "🟢 شغال") + "\n" +
+               "> **الاتصال:**  🟢 سليم\n" +
+               "> **الخوادم:**  \`" + client.guilds.cache.size + "\`",
+        inline: true,
+      },
+      {
+        name: "🎯 الصلاحية",
+        value: "> **أنت:**  " + (f.has("admin") ? "👑 **مالك**" : "👤 عضو") + "\n" +
+               "> **الخدمات:**  \`" + f.size + "\` متاحة\n" +
+               "> **المستخدم:**  <@" + uid + ">",
+        inline: true,
+      },
+    ],
+    footer: "MRBOT • v2.0 • " + new Date().getFullYear(),
+  });
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId("main_menu")
+    .setPlaceholder("🎯  اختر خدمة من القائمة...")
+    .setMinValues(1)
+    .setMaxValues(1);
+
+  if (f.has("convert")) {
+    menu.addOptions(new StringSelectMenuOptionBuilder()
+      .setLabel("🖼️  تحويل صور")
+      .setDescription("حول صورك إلى إيموجي أو ستيكرات بسهولة")
+      .setValue("panel_convert"));
+  }
+  if (f.has("delete") || f.has("giphy")) {
+    menu.addOptions(new StringSelectMenuOptionBuilder()
+      .setLabel("🏷️  إدارة الملصقات")
+      .setDescription("حذف أو بحث عن ملصقات وإيموجيات السيرفر")
+      .setValue("panel_stickers_menu"));
+  }
+  if (f.has("admin")) {
+    menu.addOptions(new StringSelectMenuOptionBuilder()
+      .setLabel("📁  إدارة الرومات")
+      .setDescription("إضافة، تعديل، حذف الرومات + نسخ احتياطي")
+      .setValue("panel_channels"));
+    menu.addOptions(new StringSelectMenuOptionBuilder()
+      .setLabel("🎭  إنشاء رتب")
+      .setDescription("إنشاء مجموعة رتب دفعة وحدة")
+      .setValue("panel_add_roles"));
+    menu.addOptions(new StringSelectMenuOptionBuilder()
+      .setLabel("➕  إضافة عضو")
+      .setDescription("إعطاء عضو صلاحيات استخدام البوت")
+      .setValue("panel_add_member"));
+    menu.addOptions(new StringSelectMenuOptionBuilder()
+      .setLabel("📢  إرسال جماعي")
+      .setDescription("إرسال رسالة خاصة لكل الأعضاء")
+      .setValue("panel_broadcast"));
+    menu.addOptions(new StringSelectMenuOptionBuilder()
+      .setLabel("⚽  مباريات تلقائية")
+      .setDescription("توقعات المباريات الدولية الحية")
+      .setValue("panel_auto_matches"));
+
+    menu.addOptions(new StringSelectMenuOptionBuilder()
+      .setLabel("📢  الإشعارات")
+      .setDescription("مراقبة المنصات وإرسال إشعارات تلقائية")
+      .setValue("panel_notifications"));
+  }
+
+  const row = new ActionRowBuilder().addComponents(menu);
+  return { embeds: [embed], components: [row] };
+}
+
+function deletePanel() {
+  const embed = new EmbedBuilder()
+    .setColor(0xeb459e)
+    .setTitle("🗑️ حذف")
+    .setDescription("اختار شنو تريد تحذف:");
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("list_stickers").setLabel("ستيكرات").setEmoji("🏷️").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("list_emojis").setLabel("ايموجي").setEmoji("🙂").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary),
+  );
+  return { embeds: [embed], components: [row] };
+}
+
+function buildList(items, type) {
+  const title = type === "sticker" ? "🏷️ ستيكرات السيرفر" : "🙂 ايموجي السيرفر";
+  const lines = items.slice(0, 60).map((it, i) => {
+    const num = String(i + 1).padStart(2, "0");
+    if (type === "sticker") return "`" + num + "` — " + it.name;
+    return "`" + num + "` — " + it.toString() + " " + it.name;
+  });
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle(title)
+    .setDescription(
+      "**عدد الكل:** " + items.length + "\n\n" +
+      (lines.join("\n") || "ماكو شي 🤷‍♂️").slice(0, 3500) +
+      "\n\n**📝 اكتب بالأرقام شنو تريد تحذف**\n" +
+      "مثال: `1 3 5` أو `1,2,3`\n" +
+      "أو اكتب `الكل` حتى تحذف كل شي."
+    );
+  return embed;
+}
+
+// ═══════════════════════════════════════════════
+// 🔍 دوال جلب المحتوى من المنصات
+// ═══════════════════════════════════════════════
+
+async function safeFetch(url, opts) {
+  try {
+    const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; MRBOT/2.0)" }, ...(opts || {}) });
+    if (!r.ok) return null;
+    return r;
+  } catch (e) { return null; }
+}
+
+// ═══ YouTube ═══
+async function checkYouTube(username) {
+  try {
+    // نجيب channel ID
+    let url = username.startsWith("@") ? "https://www.youtube.com/@" + username.slice(1) : "https://www.youtube.com/c/" + encodeURIComponent(username);
+    const r1 = await safeFetch(url);
+    if (!r1) return null;
+    const html = await r1.text();
+    const idMatch = html.match(/"channelId":"(UC[^"]+)"/);
+    if (!idMatch) return null;
+    const channelId = idMatch[1];
+
+    // نجيب آخر فيديو من RSS
+    const r2 = await safeFetch("https://www.youtube.com/feeds/videos.xml?channel_id=" + channelId);
+    if (!r2) return null;
+    const xml = await r2.text();
+    const videoMatch = xml.match(/<yt:videoId>([^<]+)<\/yt:videoId>/);
+    const titleMatch = xml.match(/<title>([^<]+)<\/title>/g);
+    const publishedMatch = xml.match(/<published>([^<]+)<\/published>/);
+    if (!videoMatch) return null;
+    const videoId = videoMatch[1];
+    const title = titleMatch && titleMatch[1] ? titleMatch[1].replace(/<[^>]+>/g, "") : "فيديو جديد";
+    return {
+      type: "video",
+      id: videoId,
+      title: title,
+      url: "https://youtube.com/watch?v=" + videoId,
+      channelName: username,
+    };
+  } catch (e) { console.log("yt err:", e.message); return null; }
+}
+
+// ═══ Twitch ═══
+async function checkTwitch(username) {
+  try {
+    const r = await safeFetch("https://decapi.me/twitch/uptime/" + username);
+    if (!r) return null;
+    const txt = (await r.text()).trim();
+    if (txt.toLowerCase().includes("offline") || txt.toLowerCase().includes("error")) return null;
+    // حي!
+    const gameR = await safeFetch("https://decapi.me/twitch/game/" + username);
+    const titleR = await safeFetch("https://decapi.me/twitch/title/" + username);
+    const game = gameR ? (await gameR.text()).trim() : "؟";
+    const title = titleR ? (await titleR.text()).trim() : "بث مباشر";
+    return {
+      type: "live",
+      id: "twitch_" + username + "_" + Date.now(),
+      title: title,
+      game: game,
+      url: "https://twitch.tv/" + username,
+      channelName: username,
+    };
+  } catch (e) { return null; }
+}
+
+// ═══ Kick ═══
+async function checkKick(username) {
+  try {
+    const r = await safeFetch("https://kick.com/api/v2/channels/" + username.toLowerCase());
+    if (!r) return null;
+    const j = await r.json();
+    const isLive = j.livestream && j.livestream.is_live;
+    if (!isLive) return null;
+    return {
+      type: "live",
+      id: "kick_" + j.livestream.id,
+      title: j.livestream.session_title || "بث مباشر",
+      game: j.livestream.categories && j.livestream.categories[0] ? j.livestream.categories[0].name : "؟",
+      url: "https://kick.com/" + username,
+      channelName: j.slug || username,
+      viewers: j.livestream.viewer_count,
+    };
+  } catch (e) { return null; }
+}
+
+// ═══ Rumble ═══
+async function checkRumble(username) {
+  try {
+    const r = await safeFetch("https://rumble.com/c/" + username);
+    if (!r) return null;
+    const html = await r.text();
+    const match = html.match(/"video_id":(\d+)/) || html.match(/href="(\/v[^"]+)"/);
+    if (!match) return null;
+    const path = match[1].startsWith("/") ? match[1] : null;
+    if (!path) return null;
+    const titleM = html.match(/<title>([^<]+)<\/title>/);
+    const title = titleM ? titleM[1].split("|")[0].trim() : "فيديو جديد";
+    return {
+      type: "video",
+      id: "rumble_" + path,
+      title: title,
+      url: "https://rumble.com" + path,
+      channelName: username,
+    };
+  } catch (e) { return null; }
+}
+
+// ═══ Odysee ═══
+async function checkOdysee(username) {
+  try {
+    const r = await safeFetch("https://odysee.com/$/rss/@" + username);
+    if (!r) return null;
+    const xml = await r.text();
+    const idM = xml.match(/<guid[^>]*>([^<]+)<\/guid>/);
+    const titleM = xml.match(/<title>([^<]+)<\/title>/);
+    if (!idM) return null;
+    const url = xml.match(/<link>([^<]+)<\/link>/);
+    return {
+      type: "video",
+      id: idM[1],
+      title: titleM ? titleM[1] : "فيديو جديد",
+      url: url ? url[1] : "https://odysee.com/@" + username,
+      channelName: username,
+    };
+  } catch (e) { return null; }
+}
+
+// ═══ Trovo ═══
+async function checkTrovo(username) {
+  try {
+    const r = await safeFetch("https://api.trovo.live/page/liveinfo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username }),
+    });
+    if (!r) return null;
+    const j = await r.json();
+    if (!j || !j.live_info || !j.live_info.live_title) return null;
+    return {
+      type: "live",
+      id: "trovo_" + username + "_" + j.live_info.started_at,
+      title: j.live_info.live_title,
+      game: j.live_info.category_name || "؟",
+      url: "https://trovo.live/" + username,
+      channelName: username,
+    };
+  } catch (e) { return null; }
+}
+
+// ═══ TikTok ═══
+async function checkTikTokV2(username) {
+  try {
+    const r = await fetch("https://www.tiktok.com/@" + username, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+    if (!r.ok) return null;
+    const html = await r.text();
+
+    // ═══ 1) نجرب Universal Data (الأفضل) ═══
+    const uniMatch = html.match(/<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([\s\S]*?)<\/script>/);
+    if (uniMatch) {
+      try {
+        const data = JSON.parse(uniMatch[1]);
+        const userInfo = data["__DEFAULT_SCOPE__"]?.["webapp.user-detail"]?.userInfo;
+        if (userInfo) {
+          const nickname = userInfo.user.nickname || username;
+          const isLive = userInfo.user.isLive || false;
+
+          // إذا بث مباشر
+          if (isLive) {
+            const roomId = userInfo.user.roomId || "";
+            return {
+              type: "live",
+              id: "tiktok_live_" + nickname + "_" + Date.now(),
+              title: "بث مباشر على TikTok",
+              url: "https://www.tiktok.com/@" + username + "/live",
+              channelName: nickname,
+            };
+          }
+
+          // ناخذ itemList (لو موجود)
+          const itemList = userInfo.itemList || [];
+          if (itemList.length > 0) {
+            const item = itemList[0];
+            return {
+              type: "video",
+              id: "tiktok_" + item.id,
+              title: item.desc || "فيديو جديد",
+              url: "https://www.tiktok.com/@" + username + "/video/" + item.id,
+              channelName: nickname,
+            };
+          }
+        }
+      } catch (e) { console.log("uni parse err:", e.message); }
+    }
+
+    // ═══ 2) نجرب نلقط أول ID من الصفحة ═══
+    const allIds = [...new Set([...html.matchAll(/"(7\d{18})"/g)].map((m) => m[1]))];
+    if (allIds.length > 0) {
+      const first = allIds[0];
+      // نجيب العنوان من og:title
+      const titleM = html.match(/<meta property="og:title" content="([^"]+)"/);
+      const title = titleM ? titleM[1] : "فيديو جديد على TikTok";
+      return {
+        type: "video",
+        id: "tiktok_" + first,
+        title: title,
+        url: "https://www.tiktok.com/@" + username + "/video/" + first,
+        channelName: username,
+        ids: allIds.slice(0, 5), // نحفظ 5 IDs للمقارنة
+      };
+    }
+
+    return null;
+  } catch (e) {
+    console.log("tiktok err:", e.message);
+    return null;
+  }
+}
+
+async function checkTikTok(username) {
+  return await checkTikTokV2(username);
+}
+
+async function checkInstagram(username) {
+  try {
+    const r = await safeFetch("https://www.instagram.com/" + username + "/?__a=1&__d=dis");
+    if (!r) return null;
+    const j = await r.json();
+    const post = j.graphql && j.graphql.user && j.graphql.user.edge_owner_to_timeline_media && j.graphql.user.edge_owner_to_timeline_media.edges[0];
+    if (!post) return null;
+    const shortcode = post.node.shortcode;
+    return {
+      type: "video",
+      id: "ig_" + shortcode,
+      title: "منشور جديد على Instagram",
+      url: "https://www.instagram.com/p/" + shortcode + "/",
+      channelName: username,
+    };
+  } catch (e) { return null; }
+}
+
+// ═══ Twitter/X ═══
+async function checkTwitter(username) {
+  try {
+    // نستخدم Nitter instances
+    const instances = ["nitter.net", "nitter.privacydev.net", "nitter.poast.org"];
+    for (const host of instances) {
+      const r = await safeFetch("https://" + host + "/" + username + "/rss");
+      if (!r) continue;
+      const xml = await r.text();
+      const idM = xml.match(/<guid[^>]*>([^<]+)<\/guid>/);
+      if (!idM) continue;
+      const titleM = xml.match(/<title>([^<]+)<\/title>/);
+      return {
+        type: "tweet",
+        id: "tw_" + idM[1],
+        title: titleM ? titleM[1].replace(/<[^>]+>/g, "").slice(0, 200) : "تغريدة جديدة",
+        url: idM[1],
+        channelName: username,
+      };
+    }
+    return null;
+  } catch (e) { return null; }
+}
+
+// ═══ Facebook ═══
+async function checkFacebook(username) {
+  try {
+    // ما في طريقة موثوقة بدون API — نحاول RSS عبر rsshub
+    const r = await safeFetch("https://rsshub.app/facebook/page/" + username);
+    if (!r) return null;
+    const xml = await r.text();
+    const idM = xml.match(/<guid[^>]*>([^<]+)<\/guid>/);
+    if (!idM) return null;
+    const titleM = xml.match(/<title>([^<]+)<\/title>/);
+    return {
+      type: "post",
+      id: "fb_" + idM[1],
+      title: titleM ? titleM[1] : "منشور جديد",
+      url: idM[1],
+      channelName: username,
+    };
+  } catch (e) { return null; }
+}
+
+async function checkPlatform(platform, username) {
+  const checkers = {
+    youtube: checkYouTube,
+    twitch: checkTwitch,
+    kick: checkKick,
+    tiktok: checkTikTok,
+  };
+  const fn = checkers[platform];
+  if (!fn) return null;
+  return await fn(username);
+}
+
+async function checkNotifications() {
+  if (!notifData.subs || !notifData.subs.length) return;
+  console.log("📢 فحص الإشعارات (" + notifData.subs.length + ")...");
+
+  for (const sub of notifData.subs) {
+    try {
+      const result = await checkPlatform(sub.platform, sub.username);
+      if (!result) continue;
+
+      // ═══ أول مرة — نحفظ بدون إرسال ═══
+      if (!sub.lastContentId) {
+        console.log("🆕 أول حفظ: " + sub.username);
+        sub.lastContentId = result.id;
+        saveNotifData();
+        continue;
+      }
+
+      // ═══ نفس المحتوى — نتخطى ═══
+      if (sub.lastContentId === result.id) continue;
+
+      // ═══ محتوى جديد — نرسل ═══
+      sub.lastContentId = result.id;
+      saveNotifData();
+
+      const p = getPlatform(sub.platform);
+      const guild = client.guilds.cache.get(GUILD_ID);
+      if (!guild) continue;
+      const ch = guild.channels.cache.get(sub.channelId) || await guild.channels.fetch(sub.channelId).catch(() => null);
+      if (!ch) continue;
+
+      const isLive = result.type === "live";
+      const embed = new EmbedBuilder()
+        .setColor(p ? p.color : 0x5865f2)
+        .setAuthor({ name: (p ? p.emoji + " " + p.name : "منصة") + " • " + (isLive ? "بث مباشر" : "محتوى جديد") })
+        .setTitle((isLive ? "🔴 مباشر الآن! " : "🎬 ") + result.title.slice(0, 200))
+        .setURL(result.url)
+        .setDescription(
+          "**" + (p ? p.emoji : "") + " " + result.channelName + "**\n\n" +
+          (isLive && result.game ? "🎮 **اللعبة:** " + result.game + "\n" : "") +
+          (isLive && result.viewers ? "👁️ **المشاهدين:** " + result.viewers + "\n" : "") +
+          "\n" + (isLive ? "**[🎥 ادخل للبث](" + result.url + ")**" : "**[▶️ شاهد الفيديو](" + result.url + ")**")
+        )
+        .setFooter({ text: "MRBOT Notifications" })
+        .setTimestamp();
+
+      const content = buildNotifContent(sub);
+      await ch.send({ content: content, embeds: [embed] }).catch(() => {});
+      console.log("✅ أرسلت إشعار: " + sub.username + " (" + sub.platform + ")");
+    } catch (e) {
+      console.log("notif err [" + sub.username + "]: " + e.message);
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+async function updateLiveMatches() {
+  if (!autoData.matches || !autoData.matches.length) return;
+  const now = Date.now();
+
+  for (const m of autoData.matches) {
+    // نتجاهل اللي ما بدأت بعد أو اللي منتهية من زمان
+    if (!m.fixtureId) continue;
+    if (now < m.startTime - 5 * 60 * 1000) continue; // قبل بداية المباراة بـ5 دقائق
+    if (now > m.startTime + 4 * 3600 * 1000) continue; // بعد 4 ساعات (خلصت)
+    if (!m.channelId || !m.messageId) continue;
+
+    try {
+      const live = await fetchLiveFixture(m.fixtureId);
+      if (!live) continue;
+
+      // نتحقق إذا في تغيير
+      const oldStatus = m.liveData ? m.liveData.status : null;
+      const oldHome = m.liveData ? m.liveData.homeScore : null;
+      const oldAway = m.liveData ? m.liveData.awayScore : null;
+      const oldElapsed = m.liveData ? m.liveData.elapsed : null;
+
+      const changed = (
+        oldStatus !== live.status ||
+        oldHome !== live.homeScore ||
+        oldAway !== live.awayScore ||
+        Math.abs((oldElapsed || 0) - (live.elapsed || 0)) >= 1
+      );
+
+      if (!changed) continue;
+
+      m.liveData = live;
+
+      // إذا المباراة بدأت → نقفل التوقع
+      if (live.status !== "NS" && !m.closed) {
+        m.closed = true;
+        console.log("🔴 بدأت المباراة — أقفلت التوقع: " + m.team1 + " vs " + m.team2);
+      }
+
+      // نحدث المنشور
+      const guild = client.guilds.cache.get(GUILD_ID);
+      if (guild) {
+        const ch = guild.channels.cache.get(m.channelId) || await guild.channels.fetch(m.channelId).catch(() => null);
+        if (ch) {
+          const msg = await ch.messages.fetch(m.messageId).catch(() => null);
+          if (msg) {
+            const options = {
+              embeds: [buildMatchEmbed(m)],
+              components: m.closed ? [] : [new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId("predict_btn_" + m.id).setLabel("خمن النتيجة").setEmoji("🎯").setStyle(ButtonStyle.Primary)
+              )],
+            };
+            await msg.edit(options).catch(() => {});
+            console.log("🔄 حدثت: " + m.team1 + " " + live.homeScore + "-" + live.awayScore + " " + m.team2 + " (" + live.status + " " + (live.elapsed || "") + "')");
+          }
+        }
+      }
+      saveAutoData();
+    } catch (e) {
+      console.log("live update err: " + e.message);
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+
+client.once("ready", async () => {
+  // ═══ Scheduler المباريات التلقائية ═══
+  if (!global.AUTO_MATCHES_SCHEDULER) {
+    global.AUTO_MATCHES_SCHEDULER = true;
+
+    // أول تشغيل: تحديث فوري
+    setTimeout(async () => {
+      if (autoData.channelId) {
+        try { await refreshAutoMatches(true); } catch (e) { console.log("init fetch err:", e.message); }
+      }
+    }, 5000);
+
+    // ═══ Scheduler الإشعارات (كل 5 دقائق) ═══
+    if (!global.NOTIF_SCHEDULER_RUNNING) {
+      global.NOTIF_SCHEDULER_RUNNING = true;
+      setTimeout(async () => {
+        try { await checkNotifications(); } catch (e) { console.log("notif init err:", e.message); }
+      }, 15000);
+      setInterval(async () => {
+        try { await checkNotifications(); } catch (e) { console.log("notif sched err:", e.message); }
+      }, 5 * 60 * 1000);
+      console.log("📢 Scheduler الإشعارات شغال (كل 5 دقائق)");
+    }
+
+    // كل 5 دقائق: نحدث المباريات الحية
+    setInterval(async () => {
+      try { await updateLiveMatches(); } catch (e) { console.log("live sched err:", e.message); }
+    }, 30000);
+
+    // كل 5 دقائق: نرسل المباريات المستحقة
+    setInterval(async () => {
+      if (!autoData.channelId || autoData.matches.length === 0) return;
+      const now = Date.now();
+      for (const m of autoData.matches) {
+        // إرسال قبل ساعتين
+        const sendAt = m.startTime - 2 * 3600 * 1000;
+        if (!m.sentAt && now >= sendAt && now < m.startTime) {
+          try {
+            const guild = client.guilds.cache.get(GUILD_ID) || await client.guilds.fetch(GUILD_ID).catch(() => null);
+            if (!guild) continue;
+            const ch = guild.channels.cache.get(m.channelId) || await guild.channels.fetch(m.channelId).catch(() => null);
+            if (!ch) continue;
+            const msg = await sendMatchCard(ch, m, true);
+            m.sentAt = Date.now();
+            m.messageId = msg.id;
+            saveAutoData();
+            console.log("✅ أرسلت: " + m.team1 + " vs " + m.team2);
+          } catch (e) { console.log("send err:", e.message); }
+        }
+        // إغلاق بعد بدء المباراة
+        if (!m.closed && now >= m.startTime) {
+          m.closed = true;
+          saveAutoData();
+          try {
+            const guild = client.guilds.cache.get(GUILD_ID);
+            if (guild && m.channelId && m.messageId) {
+              const ch = guild.channels.cache.get(m.channelId) || await guild.channels.fetch(m.channelId).catch(() => null);
+              if (ch) await editMatchCard(ch, m.messageId, m, false);
+            }
+          } catch (e) {}
+        }
+      }
+    }, 30000);
+
+    // كل 6 ساعات: تحديث المباريات
+    setInterval(async () => {
+      if (!autoData.channelId) return;
+      try { await refreshAutoMatches(false); } catch (e) { console.log("refresh err:", e.message); }
+    }, 6 * 3600 * 1000);
+
+    console.log("⚽ Scheduler المباريات التلقائية شغال");
+  }
+
+  // ═══ scheduler المباريات ═══
+  if (!global.MATCH_SCHEDULER_RUNNING) {
+    global.MATCH_SCHEDULER_RUNNING = true;
+    setInterval(async () => {
+      const now = Date.now();
+      for (const match of matchesData.matches) {
+        // إرسال قبل ساعتين
+        const sendAt = match.startTime - 2 * 60 * 60 * 1000;
+        if (!match.sentAt && now >= sendAt && now < match.startTime) {
+          try {
+            const guild = client.guilds.cache.get(GUILD_ID) || await client.guilds.fetch(GUILD_ID).catch(() => null);
+            if (!guild) continue;
+            const ch = guild.channels.cache.get(match.channelId) || await guild.channels.fetch(match.channelId).catch(() => null);
+            if (!ch) { console.log("match ch err: " + match.channelId); continue; }
+            const msg = await sendMatchCard(ch, match, true);
+            match.sentAt = Date.now();
+            match.messageId = msg.id;
+            saveMatchesData();
+            console.log("✅ أرسلت مباراة: " + match.team1 + " vs " + match.team2);
+          } catch (e) { console.log("match send err:", e.message); }
+        }
+        // إغلاق عند بداية المباراة
+        if (!match.closed && now >= match.startTime) {
+          match.closed = true;
+          saveMatchesData();
+          try {
+            const guild = client.guilds.cache.get(GUILD_ID);
+            if (guild && match.channelId && match.messageId) {
+              const ch = guild.channels.cache.get(match.channelId) || await guild.channels.fetch(match.channelId).catch(() => null);
+              if (ch) await editMatchCard(ch, match.messageId, match, false);
+            }
+            console.log("🔴 أقفلت التوقع: " + match.team1 + " vs " + match.team2);
+          } catch (e) { console.log("match close err:", e.message); }
+        }
+      }
+    }, 30000);
+    console.log("⏰ scheduler المباريات شغال (كل 5 دقائق)");
+  }
+
+  // ────────── فحص سريع عند البدء ──────────
+  const C = { g: "\x1b[32m", y: "\x1b[33m", r: "\x1b[31m", c: "\x1b[36m", x: "\x1b[0m" };
+  console.log(C.c + "\n🔍 فحص أولي..." + C.x);
+  try {
+    const fsx = require("fs");
+    const px = require("path");
+    const checks = [];
+    checks.push(fsx.existsSync(px.join(__dirname, ".env")) ? C.g + "✅ .env" : C.r + "❌ .env");
+    checks.push(process.env.BOT_TOKEN && process.env.BOT_TOKEN.length > 60 ? C.g + "✅ Token" : C.r + "❌ Token");
+    checks.push(process.env.GIPHY_KEY ? C.g + "✅ Giphy" : C.y + "⚠️ Giphy");
+    console.log("   " + checks.join(" | ") + C.x);
+    logger.info("startup", "البوت بدأ", { tag: client.user.tag, guilds: client.guilds.cache.size });
+  } catch (e) { console.log(C.r + "فحص فاشل: " + e.message + C.x); }
+
+  console.log("✅ " + client.user.tag + " شغال الحين");
+  const allUsers = [...ALLOWED, ...members.keys()];
+  for (const uid of allUsers) {
+    try {
+      const user = await client.users.fetch(uid);
+      const dm = await user.createDM();
+      await dm.send(mainPanel(uid));
+      console.log("📩 دزيت اللوحة لـ " + user.tag);
+    } catch (e) {
+      console.log("⚠️ ما كدرت ادز لـ " + uid + ": " + e.message);
+    }
+  }
+});
+
+async function sendOnboardingQuestion(dmChannel, userId) {
+  const session = onboardingSessions.get(userId);
+  if (!session) return;
+  const q = onboarding.questions[session.step];
+  if (!q) {
+    await dmChannel.send("🎉 **خلصنا!** تم إعطائك كل الأدوار.\nأهلاً بيك في السيرفر 💙").catch(() => {});
+    onboardingSessions.delete(userId);
+    return;
+  }
+  const embed = new EmbedBuilder()
+    .setColor(0x9b59b6)
+    .setTitle("❓ " + q.text)
+    .setDescription("اختار من الأزرار:")
+    .setFooter({ text: "سؤال " + (session.step + 1) + " من " + onboarding.questions.length });
+  const btns = q.options.map((o, j) =>
+    new ButtonBuilder()
+      .setCustomId("onb_ans_" + session.step + "_" + j)
+      .setLabel(o.label)
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji(o.emoji || null)
+  );
+  const rows = [];
+  for (let i = 0; i < btns.length; i += 5) {
+    rows.push(new ActionRowBuilder().addComponents(btns.slice(i, i + 5)));
+  }
+  await dmChannel.send({ embeds: [embed], components: rows }).catch(() => {});
+}
+
+client.on("guildMemberAdd", async (member) => {
+  return; // ⛔ النظام معطّل — نستخدم Onboarding الأصلي مال ديسكورد
+  if (member.guild.id !== GUILD_ID) return;
+  if (!onboarding.enabled || !onboarding.questions.length) return;
+
+  const userId = member.id;
+  onboardingSessions.set(userId, { step: 0, answers: [] });
+
+  try {
+    const dm = await member.createDM();
+    await dm.send("🎉 هلا بيك في **" + member.guild.name + "**!\n\nجاوب على " + onboarding.questions.length + " سؤال سريع حتى نعطيك أدوارك:");
+    await new Promise((r) => setTimeout(r, 500));
+    await sendOnboardingQuestion(dm, userId);
+  } catch (e) {
+    console.log("⚠️ ما كدرت ادز للعضو " + member.user.tag + ": " + e.message);
+  }
+});
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot) return;
+  if (!isAllowed(message.author.id)) return;
+
+  if (!message.guild) {
+    if (paused) return;
+    const uid = message.author.id;
+    const txt = message.content.trim();
+    const ps = sessions.get(uid);
+
+    if (ps && ps.mode === "awaiting_member_id") {
+      const mid = txt.replace(/[^0-9]/g, "");
+      if (mid.length < 17 || mid.length > 20) return message.reply("✍️ اكتب ID صحيح (17-20 رقم)");
+      if (ALLOWED.includes(mid) || members.has(mid)) return message.reply("ℹ️ مضاف أصلاً");
+      let target;
+      try { target = await client.users.fetch(mid); } catch { return message.reply("❌ ما لكيت العضو"); }
+      ps.pendingMember = { id: mid, tag: target.tag || target.username, features: ["convert","delete","giphy"] };
+      ps.mode = "awaiting_member_features";
+      sessions.set(uid, ps);
+      return message.reply(buildMemberPanel(ps.pendingMember));
+    }
+
+    // ---- نظام الاختيارات: نص السؤال ----
+    if (ps && ps.mode === "onb_q_text") {
+      const q = txt.trim();
+      if (q.length < 3 || q.length > 200) return message.reply("✍️ اكتب سؤال (3-200 حرف)");
+      ps.onbQuestion = q;
+      ps.mode = "onb_choices";
+      sessions.set(uid, ps);
+      return message.reply(
+        "✅ السؤال: **" + q + "**\n\n" +
+        "هسه دزلي الخيارات. **كل سطر = خيار** بالشكل:\n" +
+        "\`\`\`\n" +
+        "ولد | 123456789012345678 | 💙\n" +
+        "بنت | 987654321098765432 | 💗\n" +
+        "\`\`\`\n" +
+        "الترتيب: **الاسم | ID الدور | إيموجي (اختياري)**"
+      );
+    }
+
+    // ---- نظام الاختيارات: الخيارات ----
+    if (ps && ps.mode === "onb_choices") {
+      const lines = txt.split("\n").map((x) => x.trim()).filter(Boolean);
+      if (lines.length < 2) return message.reply("✍️ اكتب خيارين على الأقل، كل سطر خيار");
+      if (lines.length > 5) return message.reply("✍️ الحد الأقصى 5 خيارات");
+      const options = [];
+      const errors = [];
+      for (const line of lines) {
+        const parts = line.split("|").map((x) => x.trim());
+        if (parts.length < 2) { errors.push("❌ ناقص شي: " + line); continue; }
+        const [label, roleId, emoji] = parts;
+        if (!/^\d{17,20}$/.test(roleId)) { errors.push("❌ ID غلط: " + line); continue; }
+        // نتأكد من الدور موجود بالسيرفر
+        let guild = client.guilds.cache.get(GUILD_ID);
+        if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+        if (!guild) { errors.push("❌ ما كدرت اوصل للسيرفر"); break; }
+        const role = guild.roles.cache.get(roleId) || await guild.roles.fetch(roleId).catch(() => null);
+        if (!role) { errors.push("❌ ما لكيت الدور: " + roleId); continue; }
+        options.push({ label: label.slice(0, 80), roleId, emoji: emoji || null });
+      }
+      if (errors.length) return message.reply(errors.join("\n").slice(0, 1900));
+      if (options.length < 2) return message.reply("✍️ لازم خيارين صحيحة على الأقل");
+
+      ps.onbOptions = options;
+      ps.mode = "onb_confirm";
+      sessions.set(uid, ps);
+
+      let summary = "📝 **السؤال:** " + ps.onbQuestion + "\n\n**الخيارات:**\n";
+      options.forEach((o, i) => {
+        summary += (i + 1) + ") " + (o.emoji || "") + " " + o.label + " → \`" + o.roleId + "\`\n";
+      });
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("onb_save").setLabel("حفظ").setEmoji("💾").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("onb_cancel").setLabel("إلغاء").setEmoji("✖️").setStyle(ButtonStyle.Danger)
+      );
+      return message.reply({ content: summary, components: [row] });
+    }
+
+    // ---- إنشاء رتب: استقبال الأسماء ----
+    if (ps && ps.mode === "awaiting_role_names") {
+      let names = txt.split(/[\n,،]+/).map((x) => x.trim()).filter(Boolean);
+      names = [...new Set(names)];
+      if (names.length === 0) return message.reply("✍️ اكتب أسماء رتب");
+      if (names.length > 30) return message.reply("⚠️ الحد الأقصى 30 رتبة. عندك " + names.length);
+
+      const wait = await message.reply("⏳ جاري إنشاء " + names.length + " رتبة...");
+
+      let guild = client.guilds.cache.get(GUILD_ID);
+      if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+      if (!guild) return wait.edit("❌ ما كدرت اوصل للسيرفر");
+
+      const results = [];
+      let ok = 0, fail = 0;
+
+      for (const name of names) {
+        const safeName = name.slice(0, 100);
+        if (guild.roles.cache.find((r) => r.name === safeName)) {
+          fail++;
+          results.push("⚠️ موجودة أصلاً: **" + safeName + "**");
+          continue;
+        }
+        try {
+          const role = await guild.roles.create({
+            name: safeName,
+            color: 0x99aab5,
+            reason: "إنشاء تلقائي من البوت",
+          });
+          ok++;
+          results.push("✅ " + role.name);
+        } catch (e) {
+          fail++;
+          results.push("❌ " + safeName + ": " + e.message.split("\n")[0].slice(0, 80));
+        }
+        await new Promise((r) => setTimeout(r, 400));
+      }
+
+      sessions.delete(uid);
+
+      const e2 = new EmbedBuilder()
+        .setColor(fail > 0 ? 0xffaa00 : 0x57f287)
+        .setTitle("🎭 نتيجة إنشاء الرتب")
+        .setDescription(
+          "🌍 السيرفر: **" + guild.name + "**\n" +
+          "✅ نجح: **" + ok + "**\n" +
+          "❌ فشل: **" + fail + "**\n\n" +
+          results.join("\n").slice(0, 3500)
+        )
+        .setFooter({ text: "MRBOT" });
+
+      return wait.edit({ content: "", embeds: [e2] });
+    }
+
+    // ═══ الرومات: استقبال إضافة ═══
+    if (ps && ps.mode === "awaiting_channel_list") {
+      const lines = txt.split("\n").map((l) => l.trim()).filter(Boolean);
+      if (lines.length === 0) return message.reply("✍️ اكتب قائمة");
+      if (lines.length > 40) return message.reply("⚠️ الحد 40 سطر");
+      const categories = [];
+      const channels = [];
+      let currentCat = null;
+      for (const line of lines) {
+        if (line.startsWith("!")) {
+          const name = line.slice(1).trim().slice(0, 100);
+          if (!name) continue;
+          currentCat = { name, channels: [] };
+          categories.push(currentCat);
+        } else if (line.startsWith(".")) {
+          const name = line.slice(1).trim().slice(0, 100);
+          if (!name) continue;
+          if (currentCat) currentCat.channels.push({ name });
+          else channels.push({ name });
+        }
+      }
+      if (categories.length === 0 && channels.length === 0) {
+        return message.reply("⚠️ لازم يبدأ السطر بـ \`!\` أو \`.\`");
+      }
+      ps.pendingChannels = { categories, channels };
+      ps.mode = "channels_confirm";
+      sessions.set(uid, ps);
+      const preview = buildChannelPreview(channels, categories);
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("channels_save").setLabel("حفظ وإنشاء").setEmoji("✅").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("channels_cancel").setLabel("إلغاء").setEmoji("✖️").setStyle(ButtonStyle.Danger)
+      );
+      return message.reply({ embeds: [preview], components: [row] });
+    }
+
+    // ═══ الرومات: حذف بالأرقام ═══
+    if (ps && ps.mode === "channels_delete_list" && ps.data) {
+      const { cats, orphans, guild } = ps.data;
+
+      if (txt.trim().startsWith("كل ")) {
+        const n = parseInt(txt.trim().slice(3));
+        const cat = cats.find((c) => c.idx === n);
+        if (!cat || cat.rooms.length === 0) return message.reply("❌ ماكو رومات بالقناة " + n);
+        let ok = 0, fail = 0;
+        for (const r of cat.rooms) {
+          try {
+            const ch = guild.channels.cache.get(r.id) || await guild.channels.fetch(r.id).catch(() => null);
+            if (ch) { await ch.delete("حذف من البوت"); ok++; }
+          } catch { fail++; }
+          await new Promise((rr) => setTimeout(rr, 500));
+        }
+        cat.rooms = [];
+        sessions.set(uid, ps);
+        return message.reply({
+          content: "🗑️ حذفت **" + ok + "** من القناة **" + cat.name + "**" + (fail ? " | فشل: " + fail : ""),
+          embeds: [buildChannelsTree(ps.data, "🗑️ حذف رومات", 0xe74c3c)],
+        });
+      }
+
+      const pairs = [...txt.matchAll(/(\d+)\s*[:：]\s*(\d+)/g)].map((mm) => ({ cat: parseInt(mm[1]), room: parseInt(mm[2]) }));
+      if (pairs.length === 0) return message.reply("✍️ اكتب مثل \`1:2\` أو \`1:2 3:1\`");
+
+      let ok = 0, fail = 0;
+      const results = [];
+      for (const p of pairs) {
+        let target = null;
+        if (p.cat === 0) target = orphans.find((r) => r.roomIdx === p.room);
+        else { const cat = cats.find((c) => c.idx === p.cat); if (cat) target = cat.rooms.find((r) => r.roomIdx === p.room); }
+        if (!target) { fail++; results.push("❌ " + p.cat + ":" + p.room); continue; }
+        try {
+          const ch = guild.channels.cache.get(target.id) || await guild.channels.fetch(target.id).catch(() => null);
+          if (!ch) { fail++; results.push("❌ " + target.name); continue; }
+          await ch.delete("حذف من البوت");
+          ok++;
+          results.push("✅ " + target.name);
+          if (p.cat === 0) { const i = orphans.indexOf(target); if (i > -1) orphans.splice(i, 1); }
+          else {
+            const cat = cats.find((c) => c.idx === p.cat);
+            if (cat) { const i = cat.rooms.indexOf(target); if (i > -1) cat.rooms.splice(i, 1); cat.rooms.forEach((r, i) => r.roomIdx = i + 1); }
+          }
+        } catch (e) { fail++; results.push("❌ " + target.name + ": " + e.message.slice(0, 60)); }
+        await new Promise((rr) => setTimeout(rr, 500));
+      }
+
+      sessions.set(uid, ps);
+      if (cats.every((c) => c.rooms.length === 0) && orphans.length === 0) {
+        sessions.delete(uid);
+        return message.reply("🗑️ **خلصنا!**\n✅ **" + ok + "** | ❌ **" + fail + "**\n\n" + results.join("\n").slice(0, 3000));
+      }
+      return message.reply({
+        content: "📊 ✅ **" + ok + "** | ❌ **" + fail + "**\n" + results.join("\n").slice(0, 1000),
+        embeds: [buildChannelsTree(ps.data, "🗑️ حذف رومات", 0xe74c3c)],
+      });
+    }
+
+    // ═══ الرومات: تعديل ═══
+    if (ps && ps.mode === "channels_edit" && ps.data) {
+      const { cats, orphans, guild } = ps.data;
+      const lines = txt.split("\n").map((l) => l.trim()).filter(Boolean);
+      if (lines.length === 0) return message.reply("✍️ اكتب صيغة تعديل");
+      const results = [];
+      let ok = 0, fail = 0;
+
+      for (const line of lines) {
+        if (/^del!\s+\d+/.test(line)) {
+          const n = parseInt(line.match(/\d+/)[0]);
+          const cat = cats.find((c) => c.idx === n);
+          if (!cat) { fail++; results.push("❌ قناة " + n); continue; }
+          try {
+            const ch = guild.channels.cache.get(cat.id) || await guild.channels.fetch(cat.id).catch(() => null);
+            if (ch) { await ch.delete("حذف من البوت"); ok++; results.push("🗑️ حذف قناة: " + cat.name); cats.splice(cats.indexOf(cat), 1); cats.forEach((c, i) => c.idx = i + 1); }
+          } catch (e) { fail++; results.push("❌ " + cat.name); }
+          await new Promise((r) => setTimeout(r, 500));
+          continue;
+        }
+        if (/^del\s+\d+\s*[:：]\s*\d+/.test(line)) {
+          const mm = line.match(/(\d+)\s*[:：]\s*(\d+)/);
+          const p = { cat: parseInt(mm[1]), room: parseInt(mm[2]) };
+          let target = null;
+          if (p.cat === 0) target = orphans.find((r) => r.roomIdx === p.room);
+          else { const cat = cats.find((c) => c.idx === p.cat); if (cat) target = cat.rooms.find((r) => r.roomIdx === p.room); }
+          if (!target) { fail++; results.push("❌ " + p.cat + ":" + p.room); continue; }
+          try {
+            const ch = guild.channels.cache.get(target.id) || await guild.channels.fetch(target.id).catch(() => null);
+            if (ch) { await ch.delete("حذف من البوت"); ok++; results.push("🗑️ " + target.name); }
+            if (p.cat === 0) orphans.splice(orphans.indexOf(target), 1);
+            else { const cat = cats.find((c) => c.idx === p.cat); cat.rooms.splice(cat.rooms.indexOf(target), 1); cat.rooms.forEach((r, i) => r.roomIdx = i + 1); }
+          } catch (e) { fail++; results.push("❌ " + target.name); }
+          await new Promise((r) => setTimeout(r, 500));
+          continue;
+        }
+        if (/^!\d+\s+/.test(line)) {
+          const mm = line.match(/^!(\d+)\s+(.+)$/);
+          const n = parseInt(mm[1]);
+          const newName = mm[2].trim().slice(0, 100);
+          const cat = cats.find((c) => c.idx === n);
+          if (!cat) { fail++; results.push("❌ قناة " + n); continue; }
+          try {
+            const ch = guild.channels.cache.get(cat.id) || await guild.channels.fetch(cat.id).catch(() => null);
+            if (ch) { await ch.setName(newName); cat.name = newName; ok++; results.push("✏️ " + newName); }
+          } catch (e) { fail++; results.push("❌ " + cat.name); }
+          await new Promise((r) => setTimeout(r, 500));
+          continue;
+        }
+        const mm = line.match(/^(\d+)\s*[:：]\s*(\d+)\s+(.+)$/);
+        if (mm) {
+          const p = { cat: parseInt(mm[1]), room: parseInt(mm[2]) };
+          const newName = mm[3].trim().slice(0, 100);
+          let target = null;
+          if (p.cat === 0) target = orphans.find((r) => r.roomIdx === p.room);
+          else { const cat = cats.find((c) => c.idx === p.cat); if (cat) target = cat.rooms.find((r) => r.roomIdx === p.room); }
+          if (!target) { fail++; results.push("❌ " + p.cat + ":" + p.room); continue; }
+          try {
+            const ch = guild.channels.cache.get(target.id) || await guild.channels.fetch(target.id).catch(() => null);
+            if (ch) { await ch.setName(newName); target.name = newName; ok++; results.push("✏️ " + newName); }
+          } catch (e) { fail++; results.push("❌ " + target.name); }
+          await new Promise((r) => setTimeout(r, 500));
+          continue;
+        }
+        fail++;
+        results.push("❌ صيغة غلط: " + line.slice(0, 40));
+      }
+
+      sessions.set(uid, ps);
+      return message.reply({
+        content: "📊 ✅ **" + ok + "** | ❌ **" + fail + "**\n" + results.join("\n").slice(0, 1500),
+        embeds: [buildChannelsTree(ps.data, "✏️ تعديل الرومات", 0xf39c12)],
+      });
+    }
+
+    // ═══ الإرسال الجماعي: استقبال الرسالة ═══
+    if (ps && ps.mode === "broadcast_text") {
+      if (!txt || txt.length < 2) return message.reply("✍️ اكتب رسالة (حرفين على الأقل)");
+      if (txt.length > 2000) return message.reply("⚠️ الحد 2000 حرف");
+
+      ps.broadcastMsg = txt;
+      ps.mode = "broadcast_confirm";
+      sessions.set(uid, ps);
+
+      const preview = new EmbedBuilder()
+        .setColor(0xe74c3c)
+        .setTitle("📢 معاينة الرسالة")
+        .setDescription(txt.slice(0, 1900))
+        .setFooter({ text: "الرسالة راح ترسل لكل الأعضاء" });
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("bc_send").setLabel("إرسال للكل").setEmoji("📢").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("bc_cancel").setLabel("إلغاء").setEmoji("✖️").setStyle(ButtonStyle.Secondary)
+      );
+      return message.reply({ embeds: [preview], components: [row] });
+    }
+
+    // ═══ المباريات التلقائية: تحديد الروم ═══
+    if (ps && ps.mode === "auto_set_channel") {
+      const cid = txt.replace(/[^0-9]/g, "");
+      if (!/^\d{17,20}$/.test(cid)) return message.reply("✍️ اكتب ID روم صحيح (17-20 رقم)");
+      let guild = client.guilds.cache.get(GUILD_ID);
+      if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+      if (!guild) return message.reply("❌ ما كدرت اوصل للسيرفر");
+      const ch = guild.channels.cache.get(cid) || await guild.channels.fetch(cid).catch(() => null);
+      if (!ch) return message.reply("❌ ما لكيت هذا الروم");
+      autoData.channelId = cid;
+      saveAutoData();
+      sessions.delete(uid);
+      await message.reply("✅ تم تحديد الروم: <#" + cid + ">\n\n🔄 جاري جلب المباريات...");
+      const added = await refreshAutoMatches(true);
+      return message.reply("📊 تم جلب **" + added + "** مباراة.\nاضغط **🧪 تجربة** حتى تجرب.");
+    }
+
+    // ═══ الإشعارات: اختيار الاشتراك لتعديل رسالته ═══
+    if (ps && ps.mode === "notif_edit_pick") {
+      const n = parseInt(txt.trim());
+      if (isNaN(n) || n < 1 || n > notifData.subs.length) {
+        return message.reply("✍️ اكتب رقم صحيح (من 1 إلى " + notifData.subs.length + ")");
+      }
+      const sub = notifData.subs[n - 1];
+      if (!sub) return message.reply("❌ ما لكيت الاشتراك");
+
+      ps.mode = "notif_edit_choice";
+      ps.editSubIndex = n - 1;
+      sessions.set(uid, ps);
+
+      const p = getPlatform(sub.platform);
+      const tl = TYPE_LABELS[sub.type || "live"];
+      const tpl = NOTIF_TEMPLATES[sub.platform + "_" + (sub.type || "live")];
+
+      const previewDefault = tpl
+        ? tpl.emoji + " **" + (sub.customName || sub.username) + "** " + tpl.text + " <@&" + tpl.role + ">"
+        : "_ماكو قالب_";
+
+      const e = buildPanelEmbed({
+        icon: "✏️",
+        title: "خيارات التعديل",
+        color: p ? p.color : 0x5865f2,
+        description:
+          "### " + (p ? p.emoji : "") + " " + (p ? p.name : "?") + " • **" + sub.username + "** " + (tl ? tl.emoji : "") + "\n\n" +
+          "**📝 القالب الافتراضي:**\n> " + previewDefault + "\n\n" +
+          "**✏️ اختار شنو تعدل:**\n" +
+          "> **1** = تعديل **اسم العرض** (يبدل اليوزر بالقالب)\n" +
+          "> **2** = كتابة **رسالة كاملة مخصصة** (بدون قالب)\n" +
+          "> **3** = رجوع للافتراضي\n\u200b",
+        thumbnail: false,
+      });
+      return message.reply({ embeds: [e] });
+    }
+
+    if (ps && ps.mode === "notif_edit_choice") {
+      const ch = txt.trim();
+      const idx = ps.editSubIndex;
+      const sub = notifData.subs[idx];
+      if (!sub) return message.reply("❌ ما لكيت الاشتراك");
+
+      if (ch === "1") {
+        ps.mode = "notif_edit_name";
+        sessions.set(uid, ps);
+        return message.reply("✍️ اكتب **اسم العرض** الجديد (يبدل اليوزر في القالب):");
+      }
+      if (ch === "2") {
+        ps.mode = "notif_edit_text";
+        sessions.set(uid, ps);
+        return message.reply("✍️ اكتب **الرسالة الكاملة** (بدون قالب، ما راح يكون فيه رتبة تلقائي):");
+      }
+      if (ch === "3") {
+        delete sub.customName;
+        delete sub.customMessage;
+        saveNotifData();
+        sessions.delete(uid);
+        return message.reply("✅ تم الرجوع للقالب الافتراضي");
+      }
+      return message.reply("✍️ اكتب 1 أو 2 أو 3");
+    }
+
+    if (ps && ps.mode === "notif_edit_name") {
+      const newName = txt.trim();
+      if (newName.length === 0) return message.reply("✍️ اكتب اسم");
+      if (newName.length > 100) return message.reply("⚠️ الحد 100 حرف");
+      const idx = ps.editSubIndex;
+      const sub = notifData.subs[idx];
+      if (!sub) return message.reply("❌ ما لكيت الاشتراك");
+      sub.customName = newName;
+      saveNotifData();
+      sessions.delete(uid);
+      const finalMsg = buildNotifContent(sub);
+      return message.reply({
+        content: "✅ **تم حفظ الاسم!**\n\n**الشكل النهائي:**\n" + (finalMsg || "_ماكو قالب_"),
+      });
+    }
+
+    if (ps && ps.mode === "notif_edit_text") {
+      const newMsg = txt.trim();
+      if (newMsg.length === 0) return message.reply("✍️ اكتب نص");
+      if (newMsg.length > 2000) return message.reply("⚠️ الحد 2000 حرف");
+
+      const idx = ps.editSubIndex;
+      const sub = notifData.subs[idx];
+      if (!sub) return message.reply("❌ ما لكيت الاشتراك");
+
+      const reset = newMsg === "افتراضي" || newMsg === "default";
+      if (reset) delete sub.customMessage;
+      else sub.customMessage = newMsg;
+      saveNotifData();
+      sessions.delete(uid);
+
+      const p = getPlatform(sub.platform);
+      const e = buildPanelEmbed({
+        icon: "✅",
+        title: "تم الحفظ",
+        color: 0x57f287,
+        description:
+          "### ✅ تم التعديل\n" +
+          "> " + (p ? p.emoji + " " + p.name : "?") + " • **" + sub.username + "**\n\n" +
+          "**📝 الرسالة:**\n" +
+          (reset ? "> _افتراضي_\n" : "> \`" + sub.customMessage.slice(0, 500) + "\`\n") + "\u200b",
+        thumbnail: false,
+      });
+      return message.reply({ embeds: [e] });
+    }
+
+    // ═══ الإشعارات: استقبال اسم المستخدم ═══
+    if (ps && ps.mode === "notif_username") {
+      const uname = txt.trim().replace(/^@/, "");
+      if (uname.length < 2) return message.reply("✍️ اكتب اسم مستخدم صحيح");
+      ps.notifUsername = uname;
+
+      const p = getPlatform(ps.platform);
+
+      if (p.types && p.types.length > 1) {
+        ps.mode = "notif_type";
+        sessions.set(uid, ps);
+        const menu = new StringSelectMenuBuilder()
+          .setCustomId("notif_type_sel")
+          .setPlaceholder("🎯 اختر نوع المحتوى...")
+          .setMinValues(1)
+          .setMaxValues(1);
+        for (const t of p.types) {
+          const tl = TYPE_LABELS[t];
+          menu.addOptions(new StringSelectMenuOptionBuilder()
+            .setLabel(tl.emoji + "  " + tl.name)
+            .setDescription(tl.desc)
+            .setValue(t));
+        }
+        const e = buildPanelEmbed({
+          icon: p.emoji,
+          title: "اختر نوع المحتوى",
+          color: p.color,
+          description: "### " + p.emoji + " " + p.name + " • **" + uname + "**\n> **الخطوة 2/3:** اختر شنو تريد تراقب\n\u200b",
+          thumbnail: false,
+        });
+        return message.reply({ embeds: [e], components: [new ActionRowBuilder().addComponents(menu)] });
+      }
+
+      ps.notifType = p.types ? p.types[0] : "live";
+      ps.mode = "notif_channel";
+      sessions.set(uid, ps);
+      const tl = TYPE_LABELS[ps.notifType];
+      const e = buildPanelEmbed({
+        icon: "📍",
+        title: "اختر الروم",
+        color: p.color,
+        description: "### " + p.emoji + " " + p.name + " • **" + uname + "**\n> **النوع:** " + tl.emoji + " " + tl.name + "\n\n> **الخطوة 2/2:** اكتب ID الروم\n\u200b",
+        thumbnail: false,
+      });
+      return message.reply({ embeds: [e] });
+    }
+
+    // ═══ الإشعارات: استقبال ID الروم ═══
+    if (ps && ps.mode === "notif_channel") {
+      const cid = txt.replace(/[^0-9]/g, "");
+      if (!/^\d{17,20}$/.test(cid)) return message.reply("✍️ اكتب ID روم صحيح (17-20 رقم)");
+      let guild = client.guilds.cache.get(GUILD_ID);
+      if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+      if (!guild) return message.reply("❌ ما كدرت اوصل للسيرفر");
+      const ch = guild.channels.cache.get(cid) || await guild.channels.fetch(cid).catch(() => null);
+      if (!ch) return message.reply("❌ ما لكيت هذا الروم");
+
+      const wait = await message.reply("⏳ جاري التحقق...");
+      const testResult = await checkPlatform(ps.platform, ps.notifUsername);
+      const p = getPlatform(ps.platform);
+
+      const newSub = {
+        id: "sub_" + Date.now(),
+        platform: ps.platform,
+        username: ps.notifUsername,
+        type: ps.notifType || "live",
+        channelId: cid,
+        lastContentId: testResult ? testResult.id : null,
+        addedAt: Date.now(),
+        addedBy: uid,
+      };
+      notifData.subs.push(newSub);
+      saveNotifData();
+      sessions.delete(uid);
+
+      const tl = TYPE_LABELS[ps.notifType];
+      const e = buildPanelEmbed({
+        icon: "✅",
+        title: "تم إضافة الاشتراك",
+        color: 0x57f287,
+        description:
+          "### ✅ تم بنجاح\n" +
+          "> " + p.emoji + " **" + p.name + "** • **" + ps.notifUsername + "**\n" +
+          "> 🎯 النوع: " + (tl ? tl.emoji + " " + tl.name : "؟") + "\n" +
+          "> 📍 الروم: <#" + cid + ">\n" +
+          "> 🕐 المراقبة: كل 5 دقائق\n\u200b",
+        thumbnail: false,
+        footer: "MRBOT Notifications",
+      });
+      return wait.edit({ content: "", embeds: [e] });
+    }
+
+    // ---- Giphy: اسم البحث ----
+    if (ps && ps.mode === "awaiting_giphy_query") {
+      const q = txt.trim();
+      if (!q || q.length < 2) return message.reply("✍️ اكتب اسم واضح (حرفين على الأقل)");
+      ps.giphyQuery = q;
+      ps.mode = "awaiting_giphy_count";
+      sessions.set(uid, ps);
+      return message.reply("🔎 تبحث عن: **" + q + "**\n\nهسه اكتب **عدد الملصقات** (من 1 إلى 50)");
+    }
+
+    // ---- Giphy: العدد ----
+    if (ps && ps.mode === "awaiting_giphy_count") {
+      const n = parseInt(txt);
+      if (isNaN(n) || n < 1 || n > 50) return message.reply("✍️ اكتب رقم من **1** إلى **50**");
+      const wait = await message.reply("⏳ جاري البحث...");
+      ps.giphyOffset = 0;
+      const results = await searchGiphy(ps.giphyQuery, n, ps.giphyOffset);
+      if (!results || results.length === 0) {
+        sessions.delete(uid);
+        return wait.edit("❌ ما لكيت نتائج لـ: **" + ps.giphyQuery + "**\nجرب اسم ثاني بالإنجليزي.");
+      }
+      ps.attachments = results;
+      ps.mode = "awaiting_giphy_action";
+      sessions.set(uid, ps);
+      return sendGiphyPreview(wait, ps);
+    }
+
+    // ---- قائمة الحذف ----
+    const list = lists.get(uid);
+    if (list && list.items.length > 0) {
+      if (txt === "الكل" || txt === "كل") {
+        const all = list.items.map((_, i) => i + 1);
+        return handleDelete(message, list, all);
+      }
+      const nums = txt.split(/[\s,،]+/).map((x) => parseInt(x)).filter((x) => !isNaN(x));
+      if (nums.length > 0) return handleDelete(message, list, nums);
+      return message.reply({
+        content: "✍️ اكتب أرقام مثل \`1 3 5\` أو \`الكل\`",
+        embeds: [buildList(list.items, list.type)],
+      });
+    }
+
+    // ---- في انتظار نتيجة Giphy: نطلب منه يدوس زر ----
+    if (ps && ps.mode === "awaiting_giphy_action") {
+      return message.reply("👆 اضغط على زر **إيموجي** أو **ستيكرات** بالأعلى");
+    }
+
+    // ---- تحويل صور عادي ----
+    const session = sessions.get(uid);
+    if (!session || session.mode !== "awaiting_images") {
+      return message.reply(mainPanel(uid));
+    }
+
+    const images = [...message.attachments.values()].filter((a) =>
+      a.contentType?.startsWith("image/")
+    );
+    if (images.length === 0) return message.reply("ما لكيت صور 🤔 دزلي صور بس.");
+
+    session.attachments.push(...images);
+    sessions.set(uid, session);
+
+    const embed = new EmbedBuilder()
+      .setColor(0x00c853)
+      .setTitle("✅ وصلت الصور")
+      .setDescription("عدد الصور: **" + session.attachments.length + "**\n\nاختار شنو تريد تسوي بيها:");
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("conv_emoji").setLabel("إيموجي").setEmoji("🙂").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("conv_sticker").setLabel("ستيكرات").setEmoji("🏷️").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("conv_more").setLabel("أزيد صور").setEmoji("➕").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("conv_reset").setLabel("إلغاء").setEmoji("✖️").setStyle(ButtonStyle.Danger),
+    );
+    return message.reply({ embeds: [embed], components: [row] });
+  }
+
+  if (message.guild.id !== GUILD_ID) return;
+  const t = message.content.trim();
+
+  if (t === "اطفاء البوت" || t === "ايقاف البوت") {
+    paused = true;
+    return message.reply("🔴 تم اطفاء البوت");
+  }
+
+  if (t === "تشغيل البوت") {
+    paused = false;
+    for (const uid of ALLOWED) {
+      try {
+        const user = await client.users.fetch(uid);
+        const dm = await user.createDM();
+        await dm.send(mainPanel(uid));
+      } catch {}
+    }
+    return message.reply("🟢 تم تشغيل البوت، ودزيت اللوحة للخاص");
+  }
+
+  if (paused) return;
+
+  if (t === "تحويل" || t === "لوحة") {
+    try {
+      const dm = await message.author.createDM();
+      await dm.send(mainPanel(uid));
+      await message.reply("✅ دزيتلك اللوحة بالخاص");
+    } catch {
+      await message.reply("⚠️ ما كدرت ادزلك خاص.");
+    }
+  }
+});
+
+async function handleDelete(message, list, nums) {
+  const uid = message.author.id;
+  let guild = client.guilds.cache.get(GUILD_ID);
+  if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+  if (!guild) return message.reply("ما كدرت اوصل للسيرفر");
+
+  const unique = [...new Set(nums)];
+  const results = [];
+  let ok = 0, fail = 0;
+  const deleted = new Set();
+
+  for (const n of unique) {
+    const it = list.items[n - 1];
+    if (!it) { fail++; results.push("❌ رقم **" + n + "** مو موجود"); continue; }
+    try {
+      if (list.type === "sticker") await guild.stickers.delete(it.id);
+      else await guild.emojis.delete(it.id);
+      ok++;
+      deleted.add(it.id);
+      results.push("✅ حذفت: **" + it.name + "**");
+    } catch (e) {
+      fail++;
+      results.push("❌ **" + it.name + "**: " + e.message.split("\n")[0].slice(0, 80));
+    }
+  }
+
+  list.items = list.items.filter((it) => !deleted.has(it.id));
+
+  if (list.items.length === 0) {
+    lists.delete(uid);
+    return message.reply("🗑️ **خلصنا!**\n✅ نجح: **" + ok + "**\n❌ فشل: **" + fail + "**\n\n" + results.join("\n").slice(0, 3500));
+  }
+
+  lists.set(uid, list);
+  return message.reply({
+    content: "📊 **النتيجة** — ✅ نجح: **" + ok + "** | ❌ فشل: **" + fail + "**\n" + results.join("\n").slice(0, 1500),
+    embeds: [buildList(list.items, list.type)],
+  });
+}
+
+client.on("interactionCreate", async (interaction) => {
+  // ═══ النافذة: حفظ التوقع ═══
+  if (interaction.isModalSubmit() && interaction.customId.startsWith("predict_modal_")) {
+    const matchId = interaction.customId.replace("predict_modal_", "");
+    const m = matchesData.matches.find((x) => x.id === matchId) || autoData.matches.find((x) => x.id === matchId);
+    if (!m) return interaction.reply({ content: "❌ المباراة مو موجودة", ephemeral: true });
+    if (m.closed || Date.now() >= m.startTime) return interaction.reply({ content: "🔴 التوقع مقفل", ephemeral: true });
+    const s1 = interaction.fields.getTextInputValue("score1").trim();
+    const s2 = interaction.fields.getTextInputValue("score2").trim();
+    if (!/^\d{1,2}$/.test(s1) || !/^\d{1,2}$/.test(s2)) {
+      return interaction.reply({ content: "⚠️ اكتب أرقام من 0 إلى 99", ephemeral: true });
+    }
+    m.predictions[interaction.user.id] = { s1: parseInt(s1), s2: parseInt(s2), tag: interaction.user.tag };
+    if (m.source === "auto") saveAutoData(); else saveMatchesData();
+    // نحدث الصورة
+    try {
+      const guild = client.guilds.cache.get(GUILD_ID);
+      if (guild && m.channelId && m.messageId) {
+        const ch = guild.channels.cache.get(m.channelId) || await guild.channels.fetch(m.channelId).catch(() => null);
+        if (ch) await editMatchCard(ch, m.messageId, m, true);
+      }
+    } catch (e) { console.log("edit after pred err:", e.message); }
+    return interaction.reply({
+      content: "✅ **تم حفظ توقعك:**\n" + flagEmoji(m.flag1) + " " + m.team1 + " **" + s1 + " - " + s2 + "** " + m.team2 + " " + flagEmoji(m.flag2),
+      ephemeral: true,
+    });
+  }
+
+  // ═══ زر "خمن" ═══
+  if (interaction.isButton() && interaction.customId.startsWith("lineup_")) {
+    const fid = interaction.customId.replace("lineup_", "");
+    await interaction.deferReply();
+    let guild = client.guilds.cache.get(GUILD_ID);
+    if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+    const m = autoData.matches.find((x) => x.id === "auto_" + fid || String(x.fixtureId) === fid) ||
+              matchesData.matches.find((x) => x.id === fid);
+    if (!m) return interaction.editReply("❌ ما لقيت المباراة");
+    const fixtureId = m.fixtureId || fid;
+    try {
+      const buf = await generateLineupCard(m, fixtureId);
+      const file = new AttachmentBuilder(buf, { name: "lineup_" + fixtureId + ".png" });
+      return interaction.editReply({ files: [file] });
+    } catch (e) {
+      console.log("lineup err:", e.message);
+      return interaction.editReply("❌ فشل التوليد: " + e.message.slice(0, 100));
+    }
+  }
+
+  if (interaction.isButton() && interaction.customId.startsWith("predict_btn_")) {
+    const matchId = interaction.customId.replace("predict_btn_", "");
+    const m = matchesData.matches.find((x) => x.id === matchId) || autoData.matches.find((x) => x.id === matchId);
+    if (!m) return interaction.reply({ content: "❌ المباراة مو موجودة", ephemeral: true });
+    if (m.closed || Date.now() >= m.startTime) return interaction.reply({ content: "🔴 التوقع مقفل", ephemeral: true });
+
+    const modal = new ModalBuilder()
+      .setCustomId("predict_modal_" + matchId)
+      .setTitle("🎯 توقع النتيجة");
+    const i1 = new TextInputBuilder()
+      .setCustomId("score1")
+      .setLabel(m.team1.slice(0, 45))
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("اكتب عدد الأهداف")
+      .setMinLength(1).setMaxLength(2)
+      .setRequired(true);
+    const i2 = new TextInputBuilder()
+      .setCustomId("score2")
+      .setLabel(m.team2.slice(0, 45))
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("اكتب عدد الأهداف")
+      .setMinLength(1).setMaxLength(2)
+      .setRequired(true);
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(i1),
+      new ActionRowBuilder().addComponents(i2)
+    );
+    return interaction.showModal(modal);
+  }
+
+
+  if (interaction.isButton() && interaction.customId.startsWith("onb_ans_")) {
+    const uid = interaction.user.id;
+    const session = onboardingSessions.get(uid);
+    if (!session) {
+      return interaction.reply({ content: "❌ ماكو جلسة نشطة.", ephemeral: true });
+    }
+    const parts = interaction.customId.split("_");
+    const qIdx = parseInt(parts[2]);
+    const oIdx = parseInt(parts[3]);
+    if (qIdx !== session.step) {
+      return interaction.reply({ content: "❌ هذا السؤال قديم.", ephemeral: true });
+    }
+    const q = onboarding.questions[qIdx];
+    const opt = q && q.options[oIdx];
+    if (!opt) return interaction.reply({ content: "❌ خيار غير صحيح", ephemeral: true });
+
+    let guild = client.guilds.cache.get(GUILD_ID);
+    if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+    let roleGiven = false;
+    if (guild) {
+      const mem = guild.members.cache.get(uid) || await guild.members.fetch(uid).catch(() => null);
+      if (mem) {
+        try { await mem.roles.add(opt.roleId); roleGiven = true; }
+        catch (e) { console.log("⚠️ role add err:", e.message); }
+      }
+    }
+
+    session.answers.push({ q: q.text, a: opt.label });
+    session.step++;
+    onboardingSessions.set(uid, session);
+
+    await interaction.update({
+      content: "✅ اختاريت: **" + opt.label + "**" + (roleGiven ? "" : " (⚠️ ما كدرت اعطيك الدور)"),
+      embeds: [],
+      components: [],
+    });
+
+    await new Promise((r) => setTimeout(r, 300));
+    await sendOnboardingQuestion(interaction.channel, uid);
+    return;
+  }
+
+
+  if (interaction.isStringSelectMenu() && interaction.customId === "member_features") {
+    const uid2 = interaction.user.id;
+    const ps = sessions.get(uid2);
+    if (!ps || !ps.pendingMember) {
+      return interaction.update({ content: "❌ ماكو عضو قيد الإضافة", embeds: [], components: [] });
+    }
+    ps.pendingMember.features = interaction.values;
+    sessions.set(uid2, ps);
+    return interaction.update(buildMemberPanel(ps.pendingMember));
+  }
+
+  if (!interaction.isButton() && !interaction.isStringSelectMenu()) return;
+  if (!isAllowed(interaction.user.id)) {
+    return interaction.reply({ content: "🚫 خاص.", ephemeral: true });
+  }
+  if (paused) return interaction.reply({ content: "🔴 البوت مطفي هسه.", ephemeral: true });
+  const uid = interaction.user.id;
+  let id = interaction.customId;
+  if (id === "main_menu" && interaction.isStringSelectMenu()) {
+    id = interaction.values[0];
+  }
+
+  if (id === "panel_auto_matches") {
+    const chTxt = autoData.channelId ? "<#" + autoData.channelId + ">" : "❌ ما محدد";
+    const e = new EmbedBuilder().setColor(0x2ecc71).setTitle("⚽ المباريات التلقائية")
+      .setDescription(
+        "📡 **الحالة:** " + (autoData.channelId ? "🟢 شغال" : "🔴 ما محدد روم") + "\n" +
+        "📍 **الروم:** " + chTxt + "\n" +
+        "📊 **المباريات المحفوظة:** " + autoData.matches.length + "\n" +
+        "🕐 **آخر تحديث:** " + (autoData.lastFetch ? new Date(autoData.lastFetch).toLocaleString("ar") : "أبداً") + "\n\n" +
+        "**الدوريات المتابعة (" + TRACKED_LEAGUES.length + "):**\n" +
+        TRACKED_LEAGUES.map((l) => "• " + l.name).join("\n") + "\n\n" +
+        "🔔 البوت يرسل منشور **قبل ساعتين** من كل مباراة تلقائياً."
+      );
+    const r1 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("auto_set_ch").setLabel("تحديد الروم").setEmoji("📍").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("auto_refresh").setLabel("تحديث الآن").setEmoji("🔄").setStyle(ButtonStyle.Primary),
+    );
+    const r2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("auto_view").setLabel("عرض المباريات").setEmoji("📋").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("auto_clear").setLabel("مسح الكل").setEmoji("🗑️").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary),
+    );
+    return interaction.update({ embeds: [e], components: [r1, r2] });
+  }
+
+  if (id === "auto_set_ch") {
+    sessions.set(uid, { mode: "auto_set_channel" });
+    const e = new EmbedBuilder().setColor(0x2ecc71).setTitle("📍 تحديد الروم")
+      .setDescription("اكتب **ID الروم** اللي تريد البوت يرسل فيه المباريات\n\n📝 مثال: \`1234567890123456789\`");
+    return interaction.update({
+      embeds: [e],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary)
+      )],
+    });
+  }
+
+  if (id === "auto_refresh") {
+    await interaction.deferReply();
+    const added = await refreshAutoMatches(true);
+    // نحدث الحية كذلك
+    try { await updateLiveMatches(); } catch {}
+    return interaction.editReply({
+      content: "✅ تم التحديث!\n📊 إضافة: **" + added + "** مباراة جديدة\n📁 المجموع: **" + autoData.matches.length + "**",
+    });
+  }
+
+  if (id === "auto_view") {
+    if (autoData.matches.length === 0) return interaction.reply({ content: "📋 ماكو مباريات", ephemeral: true });
+    const sorted = [...autoData.matches].sort((a, b) => a.startTime - b.startTime).slice(0, 20);
+    const lines = sorted.map((m, i) => {
+      const st = m.closed ? "🔴" : (m.sentAt ? "🟡" : "🟢");
+      return (i + 1) + ". " + st + " " + m.team1 + " vs " + m.team2 + " — " + formatIraqTime(m.startTime) + (m.league ? " (" + m.league + ")" : "");
+    });
+    const e = new EmbedBuilder().setColor(0x3498db).setTitle("📋 المباريات التلقائية")
+      .setDescription(lines.join("\n").slice(0, 3900));
+    return interaction.update({
+      embeds: [e],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_auto_matches").setLabel("رجوع").setEmoji("↩️").setStyle(ButtonStyle.Secondary)
+      )],
+    });
+  }
+
+  if (id === "auto_clear") {
+    autoData.matches = [];
+    saveAutoData();
+    return interaction.reply({ content: "🗑️ تم مسح كل المباريات", ephemeral: true });
+  }
+
+  if (id === "panel_matches") {
+    const e = new EmbedBuilder().setColor(0x9b59b6).setTitle("🎯 المباريات")
+      .setDescription("اختار شنو تريد تسوي:\n\n📊 عدد المباريات: **" + matchesData.matches.length + "**");
+    const r = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("match_add").setLabel("إضافة مباراة").setEmoji("➕").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("match_list").setLabel("عرض المباريات").setEmoji("📋").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("match_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary)
+    );
+    return interaction.update({ embeds: [e], components: [r] });
+  }
+
+  if (id === "match_back") {
+    sessions.delete(uid);
+    return interaction.update(mainPanel(uid));
+  }
+
+  if (id === "match_add") {
+    sessions.set(uid, { mode: "match_add_wizard" });
+    const e = new EmbedBuilder().setColor(0x9b59b6).setTitle("➕ إضافة مباراة")
+      .setDescription(
+        "📝 اكتب **كل المعلومات** برسالة وحدة بهذا الشكل:\n\n" +
+        "\`\`\`\nالسعودية | sa | العراق | iq | 30/09/2026 20:30 | 1234567890\`\`\`\n\n" +
+        "**الترتيب:**\n" +
+        "1. اسم الفريق الأول\n" +
+        "2. كود العلم الأول (حرفين، مثال: \`sa\` \`iq\` \`br\`)\n" +
+        "3. اسم الفريق الثاني\n" +
+        "4. كود العلم الثاني\n" +
+        "5. التاريخ والوقت (بغداد): \`DD/MM/YYYY HH:mm\`\n" +
+        "6. ID الروم اللي يرسل فيه المنشور\n\n" +
+        "🔸 الوقت: 24 ساعة (20:30 = 8:30 مساءً)"
+      );
+    return interaction.update({
+      embeds: [e],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("match_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary)
+      )],
+    });
+  }
+
+  if (id === "match_list") {
+    if (matchesData.matches.length === 0) {
+      return interaction.reply({ content: "📋 ماكو مباريات", ephemeral: true });
+    }
+    const lines = matchesData.matches.slice(0, 20).map((m, i) => {
+      const st = m.closed ? "🔴" : (m.sentAt ? "🟡" : "🟢");
+      return (i + 1) + ". " + st + " " + flagEmoji(m.flag1) + " " + m.team1 + " vs " + m.team2 + " " + flagEmoji(m.flag2) + " — " + formatIraqTime(m.startTime);
+    });
+    const e = new EmbedBuilder().setColor(0x9b59b6).setTitle("📋 المباريات").setDescription(lines.join("\n").slice(0, 3900));
+    const r = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("match_del").setLabel("حذف مباراة").setEmoji("🗑️").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("match_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary)
+    );
+    return interaction.update({ embeds: [e], components: [r] });
+  }
+
+  if (id === "match_del") {
+    sessions.set(uid, { mode: "match_delete" });
+    return interaction.update({
+      embeds: [new EmbedBuilder().setColor(0xe74c3c).setTitle("🗑️ حذف مباراة").setDescription("اكتب **رقم المباراة** اللي تريد تحذفها")],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("match_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary)
+      )],
+    });
+  }
+
+  if (id === "channels_save") {
+    const ps = sessions.get(uid);
+    if (!ps || !ps.pendingChannels) {
+      return interaction.update({ content: "❌ ماكو قائمة. اضغط ➕ إضافة رومات من جديد.", embeds: [], components: [] });
+    }
+    await interaction.deferReply();
+    let guild = client.guilds.cache.get(GUILD_ID);
+    if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+    if (!guild) return interaction.editReply("❌ ما كدرت اوصل للسيرفر");
+
+    const { categories, channels } = ps.pendingChannels;
+    const results = [];
+    let okCat = 0, okChan = 0, fail = 0;
+
+    for (const ch of channels) {
+      try {
+        await guild.channels.create({ name: ch.name, type: 0 });
+        okChan++;
+        results.push("💬 " + ch.name);
+      } catch (e) {
+        fail++;
+        results.push("❌ " + ch.name + ": " + e.message.slice(0, 60));
+      }
+      await new Promise((r) => setTimeout(r, 700));
+    }
+
+    for (const cat of categories) {
+      let catObj = null;
+      try {
+        catObj = await guild.channels.create({ name: cat.name, type: 4 });
+        okCat++;
+        results.push("📁 " + cat.name);
+      } catch (e) {
+        fail++;
+        results.push("❌ " + cat.name + ": " + e.message.slice(0, 60));
+        continue;
+      }
+      await new Promise((r) => setTimeout(r, 700));
+
+      for (const ch of cat.channels) {
+        try {
+          await guild.channels.create({ name: ch.name, type: 0, parent: catObj.id });
+          okChan++;
+          results.push("   💬 " + ch.name);
+        } catch (e) {
+          fail++;
+          results.push("   ❌ " + ch.name + ": " + e.message.slice(0, 60));
+        }
+        await new Promise((r) => setTimeout(r, 700));
+      }
+    }
+
+    sessions.delete(uid);
+
+    const e2 = new EmbedBuilder()
+      .setColor(fail > 0 ? 0xffaa00 : 0x57f287)
+      .setTitle("📁 نتيجة الإنشاء")
+      .setDescription(
+        "✅ قنوات: **" + okCat + "**\n" +
+        "✅ رومات: **" + okChan + "**\n" +
+        "❌ فشل: **" + fail + "**\n\n" +
+        results.join("\n").slice(0, 3500)
+      );
+    return interaction.editReply({ content: "", embeds: [e2] });
+  }
+
+  if (id === "channels_cancel") {
+    sessions.delete(uid);
+    return interaction.update({ content: "✖️ تم الإلغاء", embeds: [], components: [] });
+  }
+
+  if (id === "chan_add") {
+    sessions.set(uid, { mode: "awaiting_channel_list" });
+    const e = new EmbedBuilder().setColor(0x2ecc71).setTitle("➕ إضافة رومات")
+      .setDescription(
+        "📝 اكتب القائمة **برسالة وحدة** (سطر جديد = Shift+Enter)\n\n" +
+        "\`!\` = **قناة** (Category)\n" +
+        "\`.\` = **روم** (داخل القناة)\n\n" +
+        "**مثال (انسخ كله والصقه):**\n" +
+        "\`\`\`\n! عام\n. الشات\n. الترحيب\n! ترفيه\n. ألعاب\n\`\`\`"
+      );
+    return interaction.update({
+      embeds: [e],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("chan_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary)
+      )],
+    });
+  }
+
+  if (id === "chan_back") {
+    sessions.delete(uid);
+    return interaction.update(channelsMenuPanel());
+  }
+
+  if (id === "panel_notifications") {
+    return interaction.update(notificationsPanel());
+  }
+
+  if (id === "notif_edit_msg") {
+    // نعرض المنصات المتوفرة (اللي عندها اشتراكات)
+    const platformsWithSubs = {};
+    for (const sub of notifData.subs) {
+      platformsWithSubs[sub.platform] = (platformsWithSubs[sub.platform] || 0) + 1;
+    }
+    const available = Object.keys(platformsWithSubs);
+    if (available.length === 0) {
+      return interaction.reply({ content: "📋 ماكو اشتراكات حالياً", ephemeral: true });
+    }
+
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId("notif_edit_plat")
+      .setPlaceholder("🎯 اختر المنصة...")
+      .setMinValues(1)
+      .setMaxValues(1);
+
+    for (const platId of available) {
+      const p = getPlatform(platId);
+      if (!p) continue;
+      menu.addOptions(new StringSelectMenuOptionBuilder()
+        .setLabel(p.emoji + "  " + p.name)
+        .setDescription(platformsWithSubs[platId] + " اشتراك")
+        .setValue(platId));
+    }
+
+    const e = buildPanelEmbed({
+      icon: "✏️",
+      title: "تعديل الرسالة — اختر المنصة",
+      color: 0xfee75c,
+      description: "### ✏️ اختر المنصة اللي تريد تعدل اشتراكاتها\n> ثم اختر رقم الاشتراك\n\u200b",
+      thumbnail: false,
+    });
+
+    return interaction.update({
+      embeds: [e],
+      components: [
+        new ActionRowBuilder().addComponents(menu),
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId("panel_notifications").setLabel("رجوع").setEmoji("↩️").setStyle(ButtonStyle.Secondary)
+        ),
+      ],
+    });
+  }
+
+  if (id === "notif_edit_plat") {
+    const platId = interaction.values[0];
+    const p = getPlatform(platId);
+    if (!p) return interaction.reply({ content: "❌", ephemeral: true });
+
+    // ناخذ اشتراكات هذه المنصة
+    const subs = [];
+    for (let i = 0; i < notifData.subs.length; i++) {
+      if (notifData.subs[i].platform === platId) {
+        subs.push({ index: i + 1, sub: notifData.subs[i] });
+      }
+    }
+
+    if (subs.length === 0) {
+      return interaction.reply({ content: "📋 ماكو اشتراكات لهذه المنصة", ephemeral: true });
+    }
+
+    // نعرضهم مرقمين
+    const lines = subs.map(({ index, sub }) => {
+      const tl = TYPE_LABELS[sub.type || "live"];
+      const msg = sub.customMessage ? "\`" + sub.customMessage.slice(0, 30) + "\`" : "_افتراضي_";
+      return "**" + index + ".** " + (tl ? tl.emoji : "") + " **" + sub.username + "**\n> 📝 الرسالة: " + msg;
+    });
+
+    const e = buildPanelEmbed({
+      icon: p.emoji,
+      title: p.name + " — اشتراكات",
+      color: p.color,
+      description:
+        "### " + p.emoji + " اشتراكات " + p.name + "\n" +
+        "> ✍️ اكتب **رقم الاشتراك** بالخاص لتعديل رسالته\n\u200b\n" +
+        lines.join("\n"),
+      thumbnail: false,
+    });
+
+    sessions.set(uid, { mode: "notif_edit_pick", platform: platId, subs });
+
+    return interaction.update({
+      embeds: [e],
+      components: [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId("panel_notifications").setLabel("رجوع").setEmoji("↩️").setStyle(ButtonStyle.Secondary)
+        ),
+      ],
+    });
+  }
+
+  if (id === "notif_check_now") {
+    await interaction.deferReply();
+    if (!notifData.subs.length) {
+      return interaction.editReply({ content: "📋 ماكو اشتراكات حالياً. أضف اشتراك أول." });
+    }
+
+    let checked = 0, sent = 0, failed = 0;
+    const results = [];
+
+    for (const sub of notifData.subs) {
+      checked++;
+      try {
+        const result = await checkPlatform(sub.platform, sub.username);
+        if (!result) {
+          results.push("⚪ " + sub.username + " — ماكو محتوى أو غير متاح");
+          continue;
+        }
+
+        const p = getPlatform(sub.platform);
+        const tl = TYPE_LABELS[sub.type || "live"];
+
+        // إذا محتوى جديد
+        if (sub.lastContentId && sub.lastContentId !== result.id) {
+          // نتحقق من النوع
+          if (sub.type === "video" && result.type !== "video") {
+            results.push("⚪ " + sub.username + " — مو فيديو");
+            continue;
+          }
+          if (sub.type === "live" && result.type !== "live") {
+            results.push("⚪ " + sub.username + " — مو بث");
+            continue;
+          }
+
+          // نرسل الإشعار
+          const guild = client.guilds.cache.get(GUILD_ID);
+          if (guild) {
+            const ch = guild.channels.cache.get(sub.channelId) || await guild.channels.fetch(sub.channelId).catch(() => null);
+            if (ch) {
+              const isLive = result.type === "live";
+              const emb = new EmbedBuilder()
+                .setColor(p ? p.color : 0x5865f2)
+                .setAuthor({ name: (p ? p.emoji + " " + p.name : "منصة") + " • " + (isLive ? "بث مباشر" : "فيديو جديد") })
+                .setTitle((isLive ? "🔴 مباشر الآن! " : "🎬 ") + result.title.slice(0, 200))
+                .setURL(result.url)
+                .setDescription(
+                  "**" + (p ? p.emoji : "") + " " + result.channelName + "**\n\n" +
+                  (isLive && result.game ? "🎮 **اللعبة:** " + result.game + "\n" : "") +
+                  (isLive && result.viewers ? "👁️ **المشاهدين:** " + result.viewers + "\n" : "") +
+                  "\n" + (isLive ? "**[🎥 ادخل للبث](" + result.url + ")**" : "**[▶️ شاهد الفيديو](" + result.url + ")**")
+                )
+                .setFooter({ text: "MRBOT Notifications • مراجعة يدوية" })
+                .setTimestamp();
+
+              const content = buildNotifContent(sub);
+              await ch.send({ content: content, embeds: [emb] }).catch(() => {});
+
+              sent++;
+              results.push("✅ **" + sub.username + "** (" + (p ? p.name : "?") + ") → أُرسل");
+            } else {
+              failed++;
+              results.push("❌ " + sub.username + " — ما لقيت الروم");
+            }
+          }
+
+          sub.lastContentId = result.id;
+          saveNotifData();
+        } else if (!sub.lastContentId) {
+          sub.lastContentId = result.id;
+          saveNotifData();
+          results.push("🆕 " + sub.username + " — حفظ أول محتوى (ما نرسل)");
+        } else {
+          results.push("⚪ " + sub.username + " — ماكو جديد");
+        }
+      } catch (e) {
+        failed++;
+        results.push("❌ " + sub.username + ": " + e.message.slice(0, 50));
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    const e = buildPanelEmbed({
+      icon: "⚡",
+      title: "نتيجة المراجعة الفورية",
+      color: sent > 0 ? 0x57f287 : 0x95a5a6,
+      description:
+        "### ⚡ تم الفحص\n" +
+        "> 📊 **تم فحص:**  \`" + checked + "\`\n" +
+        "> ✅ **أُرسل:**  \`" + sent + "\`\n" +
+        "> ❌ **فشل:**  \`" + failed + "\`\n\u200b",
+      fields: [
+        { name: "📋 التفاصيل", value: results.join("\n").slice(0, 1024) || "ماكو شي" },
+      ],
+      thumbnail: false,
+      footer: "MRBOT Notifications • " + new Date().toLocaleTimeString("ar"),
+    });
+
+    return interaction.editReply({ embeds: [e] });
+  }
+
+  if (id === "notif_add") {
+    // نعرض قائمة المنصات
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId("notif_plat")
+      .setPlaceholder("🎯 اختر المنصة...")
+      .setMinValues(1)
+      .setMaxValues(1);
+    for (const p of PLATFORMS) {
+      menu.addOptions(new StringSelectMenuOptionBuilder()
+        .setLabel(p.emoji + "  " + p.name)
+        .setDescription(p.desc)
+        .setValue(p.id));
+    }
+    const e = buildPanelEmbed({
+      icon: "➕",
+      title: "إضافة اشتراك — اختر المنصة",
+      color: 0x57f287,
+      description: "### 🎯 اختر المنصة التي تريد مراقبتها\n> ثم اكتب اسم المستخدم\n\u200b",
+      thumbnail: false,
+    });
+    return interaction.update({
+      embeds: [e],
+      components: [
+        new ActionRowBuilder().addComponents(menu),
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId("panel_notifications").setLabel("رجوع").setEmoji("↩️").setStyle(ButtonStyle.Secondary)
+        ),
+      ],
+    });
+  }
+
+  if (id === "notif_list") {
+    if (notifData.subs.length === 0) {
+      return interaction.reply({ content: "📋 ماكو اشتراكات حالياً", ephemeral: true });
+    }
+    const lines = notifData.subs.map((sub, i) => {
+      const p = getPlatform(sub.platform);
+      const tl = TYPE_LABELS[sub.type || "live"];
+      return "**" + (i + 1) + ".** " + (p ? p.emoji : "❓") + " **" + sub.username + "** " + (tl ? tl.emoji : "") + " → <#" + sub.channelId + ">";
+    });
+    const e = buildPanelEmbed({
+      icon: "📋",
+      title: "الاشتراكات النشطة",
+      color: 0x3498db,
+      description: lines.join("\n").slice(0, 3900),
+      thumbnail: false,
+    });
+    return interaction.update({
+      embeds: [e],
+      components: [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId("panel_notifications").setLabel("رجوع").setEmoji("↩️").setStyle(ButtonStyle.Secondary)
+        ),
+      ],
+    });
+  }
+
+  if (id === "notif_remove") {
+    if (notifData.subs.length === 0) {
+      return interaction.reply({ content: "📋 ماكو اشتراكات", ephemeral: true });
+    }
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId("notif_del")
+      .setPlaceholder("🗑️ اختر الاشتراك للحذف...")
+      .setMinValues(1)
+      .setMaxValues(1);
+    notifData.subs.slice(0, 25).forEach((sub, i) => {
+      const p = getPlatform(sub.platform);
+      menu.addOptions(new StringSelectMenuOptionBuilder()
+        .setLabel((p ? p.emoji + " " : "") + sub.username)
+        .setDescription("المنصة: " + (p ? p.name : "?") + " • الروم: #" + (client.channels.cache.get(sub.channelId)?.name || "?"))
+        .setValue(String(i)));
+    });
+    const e = buildPanelEmbed({
+      icon: "🗑️",
+      title: "حذف اشتراك",
+      color: 0xff6b6b,
+      description: "### 🗑️ اختر الاشتراك اللي تريد تحذفه\n\u200b",
+      thumbnail: false,
+    });
+    return interaction.update({
+      embeds: [e],
+      components: [
+        new ActionRowBuilder().addComponents(menu),
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId("panel_notifications").setLabel("رجوع").setEmoji("↩️").setStyle(ButtonStyle.Secondary)
+        ),
+      ],
+    });
+  }
+
+  if (id === "notif_del") {
+    const idx = parseInt(interaction.values[0]);
+    const sub = notifData.subs[idx];
+    if (!sub) return interaction.reply({ content: "❌ غير موجود", ephemeral: true });
+    notifData.subs.splice(idx, 1);
+    saveNotifData();
+    return interaction.reply({ content: "✅ تم حذف الاشتراك", ephemeral: true });
+  }
+
+  if (id === "notif_plat") {
+    const platId = interaction.values[0];
+    const p = getPlatform(platId);
+    if (!p) return interaction.reply({ content: "❌ منصة غير معروفة", ephemeral: true });
+
+    // نطلب اسم المستخدم أولاً
+    sessions.set(uid, { mode: "notif_username", platform: platId });
+    const e = buildPanelEmbed({
+      icon: p.emoji,
+      title: "إضافة اشتراك — " + p.name,
+      color: p.color,
+      description:
+        "### " + p.emoji + " " + p.name + "\n" +
+        "> **الخطوة 1/3:** اكتب اسم المستخدم\n" +
+        "> " + p.desc + "\n\u200b",
+      thumbnail: false,
+    });
+    return interaction.update({
+      embeds: [e],
+      components: [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId("panel_notifications").setLabel("إلغاء").setEmoji("✖️").setStyle(ButtonStyle.Danger)
+        ),
+      ],
+    });
+  }
+
+  if (id === "notif_type_sel") {
+    const type = interaction.values[0];
+    const ps = sessions.get(uid);
+    if (!ps || ps.mode !== "notif_type") return interaction.reply({ content: "❌ انتهت الجلسة", ephemeral: true });
+    ps.notifType = type;
+    ps.mode = "notif_channel";
+    sessions.set(uid, ps);
+
+    const p = getPlatform(ps.platform);
+    const tl = TYPE_LABELS[type];
+    const e = buildPanelEmbed({
+      icon: "📍",
+      title: "اختر الروم",
+      color: p.color,
+      description:
+        "### " + p.emoji + " " + p.name + " • **" + ps.notifUsername + "**\n" +
+        "> **النوع:** " + tl.emoji + " " + tl.name + "\n\n" +
+        "> **الخطوة 3/3:** اكتب ID الروم\n" +
+        "> (اضغط يمين على الروم → Copy Channel ID)\n\u200b",
+      thumbnail: false,
+    });
+    return interaction.update({ embeds: [e], components: [] });
+  }
+
+  if (id === "panel_channels") {
+    return interaction.update(channelsMenuPanel());
+  }
+
+  if (id === "chan_back") {
+    sessions.delete(uid);
+    return interaction.update(channelsMenuPanel());
+  }
+
+  if (id === "panel_broadcast") {
+    sessions.set(uid, { mode: "broadcast_text" });
+    const e = new EmbedBuilder().setColor(0xe74c3c).setTitle("📢 إرسال جماعي")
+      .setDescription(
+        "📝 اكتب **الرسالة** الي تريد ترسلها لكل الأعضاء\n\n" +
+        "⚠️ **تنبيهات:**\n" +
+        "• تروح لكل الأعضاء (إلا البوتات)\n" +
+        "• بعض الأعضاء عندهم الخاص مسكر → ما توصلهم\n" +
+        "• الإرسال يأخذ وقت بسبب Rate Limit"
+      );
+    return interaction.update({
+      embeds: [e],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("bc_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary)
+      )],
+    });
+  }
+
+  if (id === "bc_back") {
+    sessions.delete(uid);
+    return interaction.update(mainPanel(uid));
+  }
+
+  if (id === "bc_send") {
+    const ps = sessions.get(uid);
+    if (!ps || !ps.broadcastMsg) return interaction.reply({ content: "❌ ماكو رسالة", ephemeral: true });
+    await interaction.deferReply();
+
+    let guild = client.guilds.cache.get(GUILD_ID);
+    if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+    if (!guild) return interaction.editReply("❌ ما كدرت اوصل للسيرفر");
+
+    await guild.members.fetch().catch(() => {});
+    const members = guild.members.cache.filter((m) => !m.user.bot && m.id !== client.user.id);
+    const total = members.size;
+
+    await interaction.editReply({ content: "⏳ **بدي الإرسال لـ " + total + " عضو...**", embeds: [], components: [] });
+
+    let sent = 0, failed = 0, closedDM = 0;
+    const errors = [];
+
+    for (const m of members.values()) {
+      try {
+        const dm = await m.createDM();
+        await dm.send({ content: ps.broadcastMsg });
+        sent++;
+      } catch (e) {
+        if (e.code === 50007) closedDM++;
+        else { failed++; errors.push(m.user.tag + ": " + (e.message || "").slice(0, 40)); }
+      }
+      if ((sent + failed + closedDM) % 10 === 0) {
+        await interaction.editReply({
+          content: "⏳ **جاري الإرسال...**\n✅ وصل: " + sent + " | 📪 مسكر: " + closedDM + " | ❌ فشل: " + failed + "\nمن أصل **" + total + "**",
+          embeds: [], components: [],
+        }).catch(() => {});
+      }
+      await new Promise((r) => setTimeout(r, 1300));
+    }
+
+    sessions.delete(uid);
+    const e2 = new EmbedBuilder().setColor(0x57f287).setTitle("📢 نتيجة الإرسال الجماعي")
+      .setDescription(
+        "📊 **الأعضاء الكلي:** " + total + "\n\n" +
+        "✅ **وصلهم:** " + sent + "\n" +
+        "📪 **مسكرين الخاص:** " + closedDM + "\n" +
+        "❌ **فشل:** " + failed + "\n\n" +
+        (errors.length ? "**أخطاء:**\n" + errors.slice(0, 5).join("\n") : "")
+      )
+      .setFooter({ text: "MRBOT Broadcast" });
+    return interaction.editReply({ content: "", embeds: [e2], components: [] });
+  }
+
+  if (id === "bc_cancel") {
+    sessions.delete(uid);
+    return interaction.update({ content: "✖️ تم الإلغاء", embeds: [], components: [] });
+  }
+
+  if (id === "panel_add_roles") {
+    sessions.set(uid, { mode: "awaiting_role_names" });
+    const e = new EmbedBuilder().setColor(0x57f287).setTitle("🎭 إنشاء رتب")
+      .setDescription(
+        "📝 اكتب أسماء الرتب — **كل سطر = رتبة**\n\n" +
+        "**مثال:**\n" +
+        "\`PUBG\`\n\`Minecraft\`\n\`Roblox\`\n\n" +
+        "أو بفاصلة: \`PUBG, Minecraft, Roblox\`\n\n" +
+        "🔸 **بحد أقصى 30 رتبة**"
+      );
+    return interaction.update({
+      embeds: [e],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary)
+      )],
+    });
+  }
+
+  if (id === "panel_add_member") {
+    sessions.set(uid, { mode: "awaiting_member_id" });
+    const e = new EmbedBuilder().setColor(0x57f287).setTitle("➕ إضافة عضو")
+      .setDescription("📝 اكتب **ID العضو** الي تريد تضيفه");
+    return interaction.update({
+      embeds: [e],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary)
+      )],
+    });
+  }
+
+  if (id === "member_confirm") {
+    const ps = sessions.get(uid);
+    if (!ps || !ps.pendingMember) return interaction.reply({ content: "❌ ماكو عضو", ephemeral: true });
+    const pm = ps.pendingMember;
+    if (!pm.features || !pm.features.length) return interaction.reply({ content: "❌ اختار نظام", ephemeral: true });
+    members.set(pm.id, { features: pm.features });
+    sessions.delete(uid);
+    let sent = false;
+    try {
+      const user = await client.users.fetch(pm.id);
+      const dm = await user.createDM();
+      await dm.send(mainPanel(pm.id));
+      sent = true;
+    } catch {}
+    return interaction.update({
+      content: "✅ تم إضافة **" + pm.tag + "**" + (sent ? " ودزيتله اللوحة ✉️" : " ⚠️ ما كدرت ادزله خاص"),
+      embeds: [], components: [],
+    });
+  }
+
+  if (id === "member_cancel") {
+    sessions.delete(uid);
+    return interaction.update({ content: "✖️ تم الإلغاء", embeds: [], components: [] });
+  }
+
+  if (id === "giphy_retry") {
+    const ps = sessions.get(uid);
+    if (!ps || ps.mode !== "awaiting_giphy_action") {
+      return interaction.reply({ content: "❌ ماكو بحث فعّال", ephemeral: true });
+    }
+    await interaction.deferReply();
+    const limit = ps.attachments.length;
+    let newOffset = (ps.giphyOffset || 0) + limit;
+    // Giphy يوقف عند ~4999، إذا وصلنا نرجع من الأول
+    if (newOffset > 4900) newOffset = 0;
+    let results = await searchGiphy(ps.giphyQuery, limit, newOffset);
+    // إذا ما لكى نتائج بهذا الـ offset، نجرب عشوائي
+    if (!results || !results.length) {
+      newOffset = Math.floor(Math.random() * 200);
+      results = await searchGiphy(ps.giphyQuery, limit, newOffset);
+    }
+    if (!results || !results.length) {
+      return interaction.editReply("❌ ما لكيت نتائج جديدة، جرب اسم ثاني.");
+    }
+    ps.giphyOffset = newOffset;
+    ps.attachments = results;
+    sessions.set(uid, ps);
+    const embeds = buildGiphyPreviewEmbeds(ps.attachments, ps.giphyQuery);
+    const rows = buildGiphyActionRows();
+    return interaction.editReply({ content: "", embeds, components: rows });
+  }
+
+  if (id.startsWith("cat_")) {
+    const cat = id.slice(4);
+
+    // بكيفك: ما يطلب عدد مباشر، يطلب اسم أول
+    if (cat === "custom") {
+      sessions.set(uid, { mode: "awaiting_giphy_query" });
+      const e = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setTitle("✍️ بكيفك")
+        .setDescription("اكتب **أي اسم** بالإنجليزي\nمثال: minecraft, spider man, lol");
+      return interaction.update({
+        embeds: [e],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary)
+        )],
+      });
+    }
+
+    const hint = CATEGORY_HINTS[cat];
+    if (!hint) return interaction.reply({ content: "❌ نوع غير معروف", ephemeral: true });
+
+    sessions.set(uid, { mode: "awaiting_giphy_query", category: cat });
+    const e = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle(hint.title)
+      .setDescription("✍️ اكتب شنو تبحث بالضبط\n\n**أمثلة:** " + hint.ex);
+    return interaction.update({
+      embeds: [e],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary)
+      )],
+    });
+  }
+
+  if (id === "panel_back") {
+    sessions.delete(uid);
+    lists.delete(uid);
+    return interaction.update(mainPanel(uid));
+  }
+
+  if (id === "panel_onboarding") {
+    return interaction.update(onboardingPanel());
+  }
+
+  if (id === "onb_save") {
+    const ps = sessions.get(uid);
+    if (!ps || ps.mode !== "onb_confirm" || !ps.onbOptions) {
+      return interaction.reply({ content: "❌ ماكو سؤال قيد الحفظ", ephemeral: true });
+    }
+    onboarding.questions.push({ text: ps.onbQuestion, options: ps.onbOptions });
+    saveOnboarding();
+    sessions.delete(uid);
+    return interaction.update({
+      content: "✅ تم حفظ السؤال: **" + ps.onbQuestion + "**",
+      embeds: [],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Primary)
+      )],
+    });
+  }
+
+  if (id === "onb_cancel") {
+    sessions.delete(uid);
+    return interaction.update({
+      content: "✖️ تم الإلغاء",
+      embeds: [],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Primary)
+      )],
+    });
+  }
+
+  if (id === "onb_add") {
+    sessions.set(uid, { mode: "onb_q_text" });
+    const e = new EmbedBuilder().setColor(0x9b59b6).setTitle("➕ إضافة سؤال - خطوة 1/2")
+      .setDescription("📝 اكتب **نص السؤال** الي يظهر للعضو\n\nمثال: ولد أو بنت");
+    return interaction.update({
+      embeds: [e],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary)
+      )],
+    });
+  }
+
+  if (id === "onb_list") {
+    if (onboarding.questions.length === 0) {
+      const e = new EmbedBuilder().setColor(0xffaa00).setTitle("📋 الأسئلة").setDescription("ماكو أسئلة بعد 🤷‍♂️");
+      return interaction.update({
+        embeds: [e],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary)
+        )],
+      });
+    }
+    let list = "";
+    onboarding.questions.forEach((q, i) => {
+      list += "**" + (i + 1) + ".** " + q.text + "\n";
+      q.options.forEach((o, j) => {
+        list += "   " + (j + 1) + ") " + (o.emoji || "") + " " + o.label + " → \`" + o.roleId + "\`\n";
+      });
+      list += "\n";
+    });
+    const e = new EmbedBuilder().setColor(0x9b59b6).setTitle("📋 الأسئلة")
+      .setDescription(list.slice(0, 3800))
+      .setFooter({ text: "المجموع: " + onboarding.questions.length });
+    const rows = [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("onb_del_menu").setLabel("حذف سؤال").setEmoji("🗑️").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary)
+    )];
+    return interaction.update({ embeds: [e], components: rows });
+  }
+
+  if (id === "onb_toggle") {
+    onboarding.enabled = !onboarding.enabled;
+    saveOnboarding();
+    return interaction.update(onboardingPanel());
+  }
+
+  if (id === "panel_stickers_menu") {
+    return interaction.update(stickersMenuPanel(uid));
+  }
+
+  if (id === "panel_stickers") {
+    sessions.delete(uid);
+    return interaction.update(deletePanel());
+  }
+
+  if (id === "panel_giphy") {
+    lists.delete(uid);
+    sessions.set(uid, { mode: "awaiting_giphy_category" });
+    const e = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle("🔎 بحث ملصقات")
+      .setDescription("اختار نوع الملصقات:");
+    const r1 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("cat_games").setLabel("ألعاب").setEmoji("🎮").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("cat_funny").setLabel("مضحك").setEmoji("😂").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("cat_flags").setLabel("أعلام").setEmoji("🏳️").setStyle(ButtonStyle.Primary),
+    );
+    const r2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("cat_movies").setLabel("أفلام").setEmoji("🎬").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("cat_series").setLabel("مسلسلات").setEmoji("📺").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("cat_anime").setLabel("أنمي").setEmoji("🇯🇵").setStyle(ButtonStyle.Primary),
+    );
+    const r2b = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("cat_custom").setLabel("بكيفك").setEmoji("✍️").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary),
+    );
+    return interaction.update({ embeds: [e], components: [r1, r2, r2b] });
+  }
+
+  if (id === "list_stickers") {
+    let guild = client.guilds.cache.get(GUILD_ID);
+    if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+    if (!guild) return interaction.reply({ content: "ما كدرت اوصل للسيرفر", ephemeral: true });
+    await interaction.deferReply();
+    const fetched = await guild.stickers.fetch().catch(() => null);
+    const items = fetched ? [...fetched.values()] : [...guild.stickers.cache.values()];
+    if (items.length === 0) return interaction.editReply({ content: "ماكو ستيكرات 🤷‍♂️" });
+    lists.set(uid, { type: "sticker", items });
+    return interaction.editReply({ embeds: [buildList(items, "sticker")] });
+  }
+
+  if (id === "list_emojis") {
+    let guild = client.guilds.cache.get(GUILD_ID);
+    if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+    if (!guild) return interaction.reply({ content: "ما كدرت اوصل للسيرفر", ephemeral: true });
+    await interaction.deferReply();
+    await guild.emojis.fetch().catch(() => {});
+    const items = [...guild.emojis.cache.values()];
+    if (items.length === 0) return interaction.editReply({ content: "ماكو ايموجي 🤷‍♂️" });
+    lists.set(uid, { type: "emoji", items });
+    return interaction.editReply({ embeds: [buildList(items, "emoji")] });
+  }
+
+  if (id === "panel_convert") {
+    lists.delete(uid);
+    sessions.set(uid, { mode: "awaiting_images", attachments: [] });
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle("🖼️ تحويل صور")
+      .setDescription("دزلي الصور هسه بالخاص ورا بعض.");
+    return interaction.update({
+      embeds: [embed],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("↩️").setStyle(ButtonStyle.Secondary)
+      )],
+    });
+  }
+
+  if (id === "conv_more") {
+    const s = sessions.get(uid);
+    if (s) { s.mode = "awaiting_images"; sessions.set(uid, s); }
+    return interaction.reply({ content: "👍 دز الصور.", ephemeral: true });
+  }
+
+  if (id === "conv_reset") {
+    sessions.delete(uid);
+    return interaction.update({
+      content: "✖️ تم الإلغاء.",
+      embeds: [],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Primary)
+      )],
+    });
+  }
+
+  if (id === "conv_emoji" || id === "conv_sticker" || id === "conv_emoji_static" || id === "conv_sticker_static") {
+    return handleConvert(interaction);
+  }
+});
+
+async function handleConvert(interaction) {
+  const uid = interaction.user.id;
+  const session = sessions.get(uid);
+  if (!session || session.attachments.length === 0) {
+    return interaction.reply({ content: "ماكو صور 🤔", ephemeral: true });
+  }
+  let guild = client.guilds.cache.get(GUILD_ID);
+  if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+  if (!guild) return interaction.reply({ content: "ما كدرت اوصل للسيرفر", ephemeral: true });
+
+  await interaction.deferReply();
+  await guild.emojis.fetch().catch(() => {});
+  await guild.stickers.fetch().catch(() => {});
+
+  const tier = guild.premiumTier;
+  const emojiMax = ({ 0: 50, 1: 100, 2: 150, 3: 250 })[tier] ?? 50;
+  const stickerMax = ({ 0: 5, 1: 15, 2: 30, 3: 60 })[tier] ?? 5;
+
+  const isStatic = interaction.customId.endsWith("_static");
+  const type = interaction.customId.includes("emoji") ? "emoji" : "sticker";
+  const results = [];
+  let ok = 0, fail = 0;
+
+  for (const [i, att] of session.attachments.entries()) {
+    let baseName;
+    if (session.packName) {
+      baseName = session.packName + "_" + (i + 1);
+    } else {
+      baseName =
+        (att.name || "").replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 25) ||
+        "mr_" + Date.now().toString().slice(-6);
+    }
+    const safeName = baseName.slice(0, 30);
+    let useUrl = att.url;
+    if (isStatic && att.staticUrl) useUrl = att.staticUrl;
+    else if (type === "emoji" && att.emojiUrl) useUrl = att.emojiUrl;
+    else if (type === "sticker" && att.stickerUrl) useUrl = att.stickerUrl;
+
+    try {
+      if (type === "sticker") {
+        if (guild.stickers.cache.size >= stickerMax) {
+          results.push("❌ خلصت خزنة الستيكرات (" + stickerMax + ")");
+          fail++; continue;
+        }
+        const st = await guild.stickers.create({ file: useUrl, name: safeName, tags: "😀" });
+        results.push("✅ ستيكر: **" + st.name + "**");
+        ok++;
+      } else {
+        if (guild.emojis.cache.size >= emojiMax) {
+          results.push("❌ خلصت خزنة الايموجي (" + emojiMax + ")");
+          fail++; continue;
+        }
+        const em = await guild.emojis.create({ attachment: useUrl, name: safeName });
+        results.push("✅ ايموجي: " + em + " **" + em.name + "**");
+        ok++;
+      }
+    } catch (err) {
+      fail++;
+      results.push("❌ صورة " + (i + 1) + ": " + err.message.split("\n")[0].slice(0, 100));
+    }
+  }
+
+  sessions.delete(uid);
+
+  const embed = new EmbedBuilder()
+    .setColor(fail > 0 ? 0xffaa00 : 0x57f287)
+    .setTitle("📊 نتيجة التحويل " + (isStatic ? "(ثابت)" : "(متحرك)"))
+    .setDescription(
+      "🌍 السيرفر: **" + guild.name + "**\n" +
+      "✅ نجح: **" + ok + "**\n" +
+      "❌ فشل: **" + fail + "**\n\n" +
+      results.join("\n").slice(0, 3800)
+    )
+    .setFooter({ text: "MRBOT" })
+    .setTimestamp();
+
+  await interaction.editReply({
+    embeds: [embed],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع للوحة").setEmoji("🏠").setStyle(ButtonStyle.Primary)
+    )],
+  });
+}
+
+client.login(process.env.BOT_TOKEN);

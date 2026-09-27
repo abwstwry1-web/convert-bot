@@ -1,0 +1,80 @@
+═══ تقرير MRBOT Doctor ═══
+التاريخ: 26‏/9‏/2026، 12:09:58 م
+السيرفر: MR AWSY Community (1515298513498542191)
+الحالة: 🟢 ممتاز
+✅ Rate Limit: لا
+
+
+━━━ 1) النظام ━━━
+   Node: v24.17.0
+   منصة: android arm64
+   ذاكرة حرة: 1262 MB
+
+━━━ 2) الملفات ━━━
+✅ index.js [74479b | md5:b5be671b]
+✅ package.json [381b | md5:dd7ed868]
+✅ .env [155b | md5:22d6d40c]
+
+━━━ 3) الإعدادات ━━━
+✅ BOT_TOKEN
+✅ OWNER_ID = 1257588661306916956
+✅ GIPHY_KEY
+
+━━━ 4) المكتبات ━━━
+✅ discord.js
+✅ dotenv
+
+━━━ 5) صياغة الكود ━━━
+✅ ماكو أخطاء صياغة
+
+━━━ 6) الوظائف ━━━
+✅ mainPanel
+✅ checkFeature
+✅ handleConvert
+✅ searchGiphy
+✅ fetchGameEmojis
+✅ panel_convert
+✅ panel_stickers_menu
+✅ panel_giphy
+✅ panel_add_member
+✅ panel_add_roles
+✅ panel_games_emoji
+
+━━━ 7) الشبكة ━━━
+✅ Discord (282ms)
+✅ Giphy (273ms)
+✅ Wikipedia (469ms)
+✅ wsrv.nl (238ms)
+
+━━━ 8) الاتصال بديسكورد ━━━
+✅ موصول — بوت الضروره#8844
+
+━━━ 9) السيرفر ━━━
+✅ وصلنا: MR AWSY Community
+   الأعضاء: 58
+   المستوى: Tier 0
+
+━━━ 10) الصلاحيات ━━━
+✅ ManageExpressions
+✅ ManageRoles
+✅ SendMessages
+✅ AttachFiles
+✅ EmbedLinks
+
+━━━ 11) الإيموجيات ━━━
+   إيموجيات: 0 / 50
+   ملصقات: 5
+✅ 50 خانة فاضية
+
+━━━ 12) اختبار إنشاء إيموجي ━━━
+✅ الإضافة شغالة (440ms)
+✅ حُذف الاختبار
+
+━━━ 13) Giphy ━━━
+✅ شغال
+
+━━━ 14) الترجمة ━━━
+✅ شغالة: cat → قطّة
+
+═══ المشاكل ═══
+✅ ماكو مشاكل
