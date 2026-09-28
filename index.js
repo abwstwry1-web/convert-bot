@@ -2988,6 +2988,15 @@ async function checkPlatform(platform, username) {
   return await fn(username);
 }
 
+function isValidTextChannel(ch) {
+  if (!ch) return false;
+  // 0 = Text, 5 = Announcement, 11 = Public Thread, 12 = Private Thread
+  const validTypes = [0, 5, 11, 12];
+  if (!validTypes.includes(ch.type)) return false;
+  if (typeof ch.send !== "function") return false;
+  return true;
+}
+
 async function sendNewsUpdate(force) {
   if (!newsData.channelId) return 0;
 
@@ -2995,7 +3004,7 @@ async function sendNewsUpdate(force) {
   if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
   if (!guild) return 0;
   const ch = guild.channels.cache.get(newsData.channelId) || await guild.channels.fetch(newsData.channelId).catch(() => null);
-  if (!ch) { console.log("news ch err"); return 0; }
+  if (!isValidTextChannel(ch)) { console.log("news ch type invalid"); return 0; }
 
   let sent = 0;
   const knownIds = new Set(newsData.lastNews || []);
@@ -3083,7 +3092,7 @@ async function checkNotifications() {
       const guild = client.guilds.cache.get(GUILD_ID);
       if (!guild) continue;
       const ch = guild.channels.cache.get(sub.channelId) || await guild.channels.fetch(sub.channelId).catch(() => null);
-      if (!ch) continue;
+      if (!ch || typeof ch.send !== "function") { console.log("⚠️ ch " + sub.channelId + " مو نصية"); continue; }
 
       const isLive = result.type === "live";
       const embed = new EmbedBuilder()
