@@ -1829,6 +1829,77 @@ function saveNotifData() {
 }
 let notifData = loadNotifData();
 
+// ═══════════════════════════════════════════
+// 📰 نظام أخبار كرة القدم
+// ═══════════════════════════════════════════
+const NEWS_FILE = require("path").join(__dirname, "data", "news.json");
+function loadNewsData() {
+  try {
+    if (fs.existsSync(NEWS_FILE)) return JSON.parse(fs.readFileSync(NEWS_FILE, "utf8"));
+  } catch (e) {}
+  return { channelId: null, categories: ["football"], interval: 30, lastNews: [], enabled: false };
+}
+function saveNewsData() {
+  try {
+    const dir = require("path").dirname(NEWS_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(NEWS_FILE, JSON.stringify(newsData, null, 2));
+  } catch (e) { console.log("news save err:", e.message); }
+}
+let newsData = loadNewsData();
+
+const NEWS_CATEGORIES = [
+  { id: "football", name: "كرة القدم", emoji: "⚽", q: "كرة+القدم" },
+  { id: "transfers", name: "الانتقالات", emoji: "🔄", q: "انتقالات+كرة+القدم" },
+  { id: "champions", name: "دوري أبطال أوروبا", emoji: "🏆", q: "دوري+أبطال+أوروبا" },
+  { id: "saudi", name: "الدوري السعودي", emoji: "🇸🇦", q: "الدوري+السعودي" },
+  { id: "iraq", name: "منتخب العراق", emoji: "🇮🇶", q: "منتخب+العراق" },
+  { id: "epl", name: "الدوري الإنجليزي", emoji: "🏴", q: "الدوري+الإنجليزي" },
+  { id: "laliga", name: "الدوري الإسباني", emoji: "🇪🇸", q: "الدوري+الإسباني" },
+  { id: "seriea", name: "الدوري الإيطالي", emoji: "🇮🇹", q: "الدوري+الإيطالي" },
+  { id: "worldcup", name: "كأس العالم", emoji: "🌍", q: "كأس+العالم" },
+  { id: "injuries", name: "الإصابات", emoji: "🏥", q: "إصابة+لاعب" },
+];
+
+function getNewsCategory(id) {
+  return NEWS_CATEGORIES.find((c) => c.id === id);
+}
+
+async function fetchNewsFromGoogle(categoryId) {
+  const cat = getNewsCategory(categoryId);
+  if (!cat) return [];
+  const url = "https://news.google.com/rss/search?q=" + cat.q + "&hl=ar&gl=IQ&ceid=IQ:ar";
+  try {
+    const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; MRBOT/2.0)" } });
+    if (!r.ok) return [];
+    const xml = await r.text();
+    const items = [];
+    const itemRegex = /<item>([\s\S]*?)<\/item>/g;
+    let m;
+    while ((m = itemRegex.exec(xml)) !== null) {
+      const itemXml = m[1];
+      const titleM = itemXml.match(/<title>([^<]+)<\/title>/);
+      const linkM = itemXml.match(/<link>([^<]+)<\/link>/);
+      const descM = itemXml.match(/<description>([\s\S]*?)<\/description>/);
+      const dateM = itemXml.match(/<pubDate>([^<]+)<\/pubDate>/);
+      const sourceM = itemXml.match(/<source[^>]*>([^<]+)<\/source>/);
+      if (!titleM || !linkM) continue;
+      items.push({
+        id: linkM[1].slice(-50),
+        title: titleM[1].replace(/<!\[CDATA\[/g, "").replace(/\]\]>/g, "").trim(),
+        link: linkM[1].trim(),
+        desc: descM ? descM[1].replace(/<[^>]+>/g, "").replace(/&[^;]+;/g, "").slice(0, 250).trim() : "",
+        date: dateM ? new Date(dateM[1]).getTime() : Date.now(),
+        source: sourceM ? sourceM[1].trim() : "",
+      });
+    }
+    return items;
+  } catch (e) {
+    console.log("news fetch err [" + categoryId + "]:", e.message);
+    return [];
+  }
+}
+
 const PLATFORMS = [
   { id: "youtube", name: "YouTube", emoji: "▶️", color: 0xff0000, desc: "اسم القناة أو @handle", types: ["video", "live"] },
   { id: "twitch", name: "Twitch", emoji: "🟣", color: 0x9146ff, desc: "اسم المستخدم", types: ["live"] },
@@ -2390,6 +2461,49 @@ function getGuildStats() {
   } catch (e) { return null; }
 }
 
+function newsPanel() {
+  const catNames = newsData.categories.map((id) => {
+    const c = getNewsCategory(id);
+    return c ? c.emoji + " " + c.name : id;
+  }).join(" ╎ ");
+
+  const chTxt = newsData.channelId ? "<#" + newsData.channelId + ">" : "❌ ما محدد";
+  const status = newsData.channelId && newsData.enabled ? "🟢 شغال" : "🔴 موقف";
+
+  const embed = buildPanelEmbed({
+    icon: "📰",
+    title: "أخبار كرة القدم",
+    color: 0x3498db,
+    description:
+      "### 📰 أخبار رياضية مباشرة\n" +
+      "> البوت يجيب آخر الأخبار تلقائي من Google News\n" +
+      "> ويبعثها للروم المحدد\n\u200b",
+    stats: [
+      { emoji: "📊", label: "الأخبار المرسلة  ", value: newsData.lastNews.length },
+      { emoji: "⏱️", label: "التردد (دقيقة) ", value: newsData.interval },
+    ],
+    fields: [
+      { name: "🎯 الحالة", value: "> " + status + "\n> 📍 الروم: " + chTxt, inline: false },
+      { name: "📂 الفئات المتابعة", value: "> " + (catNames || "ماكو"), inline: false },
+    ],
+    thumbnail: false,
+    footer: "MRBOT News",
+  });
+
+  const r1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("news_set_ch").setLabel("تحديد الروم").setEmoji("📍").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("news_categories").setLabel("الفئات").setEmoji("📂").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId("news_toggle").setLabel(newsData.enabled ? "إيقاف" : "تشغيل").setEmoji(newsData.enabled ? "⏸️" : "▶️").setStyle(newsData.enabled ? ButtonStyle.Danger : ButtonStyle.Success),
+  );
+  const r2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("news_interval").setLabel("التردد").setEmoji("⏱️").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("news_test").setLabel("تجربة الآن").setEmoji("🧪").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("panel_back").setLabel("رجوع").setEmoji("🏠").setStyle(ButtonStyle.Secondary),
+  );
+
+  return { embeds: [embed], components: [r1, r2] };
+}
+
 function notificationsPanel() {
   const subCount = notifData.subs.length;
   const embed = buildPanelEmbed({
@@ -2518,6 +2632,11 @@ function mainPanel(uid) {
       .setLabel("📢  الإشعارات")
       .setDescription("مراقبة المنصات وإرسال إشعارات تلقائية")
       .setValue("panel_notifications"));
+
+    menu.addOptions(new StringSelectMenuOptionBuilder()
+      .setLabel("📰  أخبار كرة القدم")
+      .setDescription("آخر أخبار الرياضة تلقائياً كل فترة")
+      .setValue("panel_news"));
   }
 
   const row = new ActionRowBuilder().addComponents(menu);
@@ -2869,6 +2988,51 @@ async function checkPlatform(platform, username) {
   return await fn(username);
 }
 
+async function sendNewsUpdate(force) {
+  if (!newsData.channelId) return 0;
+
+  let guild = client.guilds.cache.get(GUILD_ID);
+  if (!guild) guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+  if (!guild) return 0;
+  const ch = guild.channels.cache.get(newsData.channelId) || await guild.channels.fetch(newsData.channelId).catch(() => null);
+  if (!ch) { console.log("news ch err"); return 0; }
+
+  let sent = 0;
+  const knownIds = new Set(newsData.lastNews || []);
+
+  for (const catId of newsData.categories) {
+    const items = await fetchNewsFromGoogle(catId);
+    const cat = getNewsCategory(catId);
+
+    for (const it of items.slice(0, 3)) {
+      if (knownIds.has(it.id)) continue;
+      try {
+        const embed = new EmbedBuilder()
+          .setColor(0x3498db)
+          .setAuthor({ name: (cat ? cat.emoji + " " + cat.name : "📰 أخبار") + (it.source ? " ╎ " + it.source : "") })
+          .setTitle(it.title.slice(0, 250))
+          .setURL(it.link)
+          .setDescription(it.desc ? it.desc.slice(0, 400) : "🔗 اضغط على العنوان لقراءة الخبر")
+          .setFooter({ text: "MRBOT News • " + new Date(it.date).toLocaleString("ar") })
+          .setTimestamp(it.date);
+
+        await ch.send({ embeds: [embed] });
+        knownIds.add(it.id);
+        sent++;
+        await new Promise((r) => setTimeout(r, 1500));
+      } catch (e) { console.log("news send err:", e.message); }
+    }
+
+    if (!force && sent >= 3) break;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+
+  newsData.lastNews = [...knownIds].slice(-200);
+  saveNewsData();
+  if (sent > 0) console.log("📰 أرسلت " + sent + " خبر");
+  return sent;
+}
+
 async function checkNotifications() {
   if (!notifData.subs || !notifData.subs.length) return;
   console.log("📢 فحص الإشعارات (" + notifData.subs.length + ")...");
@@ -3021,6 +3185,18 @@ client.once("ready", async () => {
         try { await refreshAutoMatches(true); } catch (e) { console.log("init fetch err:", e.message); }
       }
     }, 5000);
+
+    // ═══ Scheduler الأخبار ═══
+    if (!global.NEWS_SCHEDULER) {
+      global.NEWS_SCHEDULER = true;
+      setInterval(async () => {
+        try {
+          if (!newsData.enabled || !newsData.channelId) return;
+          await sendNewsUpdate(false);
+        } catch (e) { console.log("news sched err:", e.message); }
+      }, 60 * 1000);
+      console.log("📰 Scheduler الأخبار شغال");
+    }
 
     // ═══ Scheduler الإشعارات (كل 5 دقائق) ═══
     if (!global.NOTIF_SCHEDULER_RUNNING) {
@@ -4256,6 +4432,125 @@ client.on("interactionCreate", async (interaction) => {
   if (id === "chan_back") {
     sessions.delete(uid);
     return interaction.update(channelsMenuPanel());
+  }
+
+  if (id === "panel_news") {
+    return interaction.update(newsPanel());
+  }
+
+  if (id === "news_set_ch") {
+    sessions.set(uid, { mode: "news_set_channel" });
+    const e = buildPanelEmbed({
+      icon: "📍",
+      title: "تحديد روم الأخبار",
+      color: 0x3498db,
+      description:
+        "### 📍 اكتب ID الروم\n" +
+        "> اللي تريد البوت يبعث الأخبار فيه\n\n" +
+        "**كيف تجيب ID الروم؟**\n" +
+        "> • اضغط يمين على الروم → Copy Channel ID\n\u200b",
+      thumbnail: false,
+    });
+    return interaction.update({
+      embeds: [e],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("panel_news").setLabel("رجوع").setEmoji("↩️").setStyle(ButtonStyle.Secondary)
+      )],
+    });
+  }
+
+  if (id === "news_toggle") {
+    if (!newsData.channelId) {
+      return interaction.reply({ content: "❌ لازم تحدد الروم أول", ephemeral: true });
+    }
+    newsData.enabled = !newsData.enabled;
+    saveNewsData();
+    return interaction.update(newsPanel());
+  }
+
+  if (id === "news_categories") {
+    const selected = new Set(newsData.categories);
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId("news_cat_sel")
+      .setPlaceholder("📂 اختر الفئات")
+      .setMinValues(1)
+      .setMaxValues(NEWS_CATEGORIES.length);
+    for (const c of NEWS_CATEGORIES) {
+      menu.addOptions(new StringSelectMenuOptionBuilder()
+        .setLabel(c.emoji + "  " + c.name)
+        .setValue(c.id)
+        .setDefault(selected.has(c.id)));
+    }
+    return interaction.update({
+      embeds: [buildPanelEmbed({
+        icon: "📂",
+        title: "اختر الفئات",
+        color: 0x3498db,
+        description: "### 📂 اختر الفئات اللي تريد تتابعها\n> تكدر تختار أكثر من وحدة\n\u200b",
+        thumbnail: false,
+      })],
+      components: [
+        new ActionRowBuilder().addComponents(menu),
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId("panel_news").setLabel("رجوع").setEmoji("↩️").setStyle(ButtonStyle.Secondary)
+        ),
+      ],
+    });
+  }
+
+  if (id === "news_interval") {
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId("news_interval_sel")
+      .setPlaceholder("⏱️ اختر التردد")
+      .setMinValues(1)
+      .setMaxValues(1);
+    const opts = [
+      { v: 15, n: "كل 15 دقيقة" },
+      { v: 30, n: "كل 30 دقيقة" },
+      { v: 60, n: "كل ساعة" },
+      { v: 180, n: "كل 3 ساعات" },
+      { v: 360, n: "كل 6 ساعات" },
+    ];
+    for (const o of opts) {
+      menu.addOptions(new StringSelectMenuOptionBuilder()
+        .setLabel(o.n)
+        .setValue(String(o.v))
+        .setDefault(newsData.interval === o.v));
+    }
+    return interaction.update({
+      embeds: [buildPanelEmbed({
+        icon: "⏱️",
+        title: "تردد الإرسال",
+        color: 0x3498db,
+        description: "### ⏱️ كم مرة يفحص ويبعث الأخبار؟\n\u200b",
+        thumbnail: false,
+      })],
+      components: [
+        new ActionRowBuilder().addComponents(menu),
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId("panel_news").setLabel("رجوع").setEmoji("↩️").setStyle(ButtonStyle.Secondary)
+        ),
+      ],
+    });
+  }
+
+  if (id === "news_test") {
+    if (!newsData.channelId) return interaction.reply({ content: "❌ حدد الروم أول", ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    const count = await sendNewsUpdate(true);
+    return interaction.editReply("✅ تم إرسال **" + count + "** خبر للروم <#" + newsData.channelId + ">");
+  }
+
+  if (interaction.isStringSelectMenu() && interaction.customId === "news_cat_sel") {
+    newsData.categories = interaction.values;
+    saveNewsData();
+    return interaction.update(newsPanel());
+  }
+
+  if (interaction.isStringSelectMenu() && interaction.customId === "news_interval_sel") {
+    newsData.interval = parseInt(interaction.values[0]);
+    saveNewsData();
+    return interaction.update(newsPanel());
   }
 
   if (id === "panel_notifications") {
