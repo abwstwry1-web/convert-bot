@@ -216,7 +216,7 @@ function parseApiFixtures(fixtures) {
 async function refreshAutoMatches(force) {
   const now = Date.now();
   // نحدث كل 6 ساعات
-  if (!force && autoData.lastFetch && now - autoData.lastFetch < 6 * 3600 * 1000) {
+  if (!force && autoData.lastFetch && now - autoData.lastFetch < 12 * 3600 * 1000) {
     console.log("⏭️ آخر تحديث قبل " + Math.round((now - autoData.lastFetch) / 60000) + " دقيقة");
     return 0;
   }
@@ -2725,7 +2725,7 @@ async function checkTikTokV2(username) {
       const data = j.data;
       
       // status 2 = live، غير ذلك = مو live
-      if (data && data.liveRoom && data.liveRoom.status === 2) {
+      if (data && data.liveRoom && data.liveRoom.status === 2 && data.liveRoom.startTime && (Date.now() / 1000 - data.liveRoom.startTime) < 24 * 3600) {
         const roomId = data.liveRoom.roomId || data.user?.roomId || Date.now();
         const title = data.liveRoom.title || "بث مباشر على TikTok";
         console.log("🔴 " + username + " LIVE! roomId: " + roomId);
@@ -3078,7 +3078,7 @@ client.once("ready", async () => {
     setInterval(async () => {
       if (!autoData.channelId) return;
       try { await refreshAutoMatches(false); } catch (e) { console.log("refresh err:", e.message); }
-    }, 6 * 3600 * 1000);
+    }, 12 * 3600 * 1000);
 
     console.log("⚽ Scheduler المباريات التلقائية شغال");
   }
@@ -3713,7 +3713,7 @@ client.on("messageCreate", async (message) => {
         username: ps.notifUsername,
         type: ps.notifType || "live",
         channelId: cid,
-        lastContentId: testResult ? testResult.id : null,
+        lastContentId: null,
         addedAt: Date.now(),
         addedBy: uid,
       };
